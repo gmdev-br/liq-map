@@ -30,11 +30,13 @@ export function Dashboard() {
   const { data: stats, isLoading: statsLoading } = useLiquidationStats();
 
   // WebSocket for real-time data
-  useWebSocket({
-    onLiquidation: (liquidation) => {
-      setLiveLiquidations((prev) => [liquidation, ...prev].slice(0, 50));
-    },
-  });
+  const { lastMessage } = useWebSocket();
+
+  useEffect(() => {
+    if (lastMessage && lastMessage.type === 'liquidation') {
+      setLiveLiquidations((prev) => [lastMessage.data, ...prev].slice(0, 50));
+    }
+  }, [lastMessage]);
 
   const allLiquidations = [...liveLiquidations, ...(liquidationsData?.data || [])];
 

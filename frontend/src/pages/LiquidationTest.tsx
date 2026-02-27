@@ -8,7 +8,8 @@ import {
     Activity,
     DollarSign,
     TrendingUp,
-    TrendingDown
+    TrendingDown,
+    Clock
 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import {
@@ -23,6 +24,7 @@ import {
 } from 'recharts';
 import axios from 'axios';
 import { format } from 'date-fns';
+import { useCacheData } from '@/hooks/useCacheData';
 
 interface HistoricalLiquidation {
     timestamp: number;
@@ -41,10 +43,10 @@ export function LiquidationTest() {
     const [amountMin, setAmountMin] = useState<string>('');
     const [amountMax, setAmountMax] = useState<string>('');
     const [side, setSide] = useState<'all' | 'long' | 'short'>('all');
-    const [isLoading, setIsLoading] = useState(false);
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
+    const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
 
     const formatCurrency = (value: number) => {
         if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
@@ -110,7 +112,6 @@ export function LiquidationTest() {
     };
 
     const fetchLiquidationData = async () => {
-        setIsLoading(true);
         setStatus({ message: 'Fetching liquidation data...', type: 'loading' });
 
         if (apiKey && apiKey !== 'FREE') {
@@ -121,20 +122,16 @@ export function LiquidationTest() {
         const start = months === 0 ? end - (10 * 365 * 24 * 60 * 60) : end - (months * 30 * 24 * 60 * 60);
 
         try {
-            // 1. Fetch search-matched liquidation history
             const response = await axios.get('/api/liquidation-history', {
                 params: {
                     symbols: symbol,
                     interval: 'daily',
                     from: start,
                     to: end,
-                    api_key: apiKey,
-                    amount_min: amountMin ? Number(amountMin) : undefined,
-                    amount_max: amountMax ? Number(amountMax) : undefined
+                    api_key: apiKey
                 }
             });
 
-            // 2. Fetch corresponding price history for the same period
             const priceResponse = await axios.get('/api/price-history', {
                 params: {
                     symbols: symbol,
@@ -143,55 +140,82 @@ export function LiquidationTest() {
                 }
             });
 
-            const priceData = Array.isArray(priceResponse.data) ? priceResponse.data : [];
-            // Create a map for quick lookup by timestamp (handling potential off-by-some-seconds)
+            return { liquidation: response.data, price: priceResponse.data };
+        } catch (error: any) {
+            throw error;
+        }
+    };
+
+    const { isLoading, refetch, isFromCache, clearCache } = useCacheData({
+        cacheKey: `liquidation_${symbol}_${months}`,
+        fetchFn: fetchLiquidationData,
+        ttlMinutes: 30,
+        enabled: true,
+        onSuccess: async (result) => {
+            const data = result as any;
+            if (!data) return;
+
+            const { liquidation, price } = data;
+            const priceData = Array.isArray(price) ? price : [];
             const priceMap = new Map();
             priceData.forEach((p: any) => {
-                // Round to nearest day if daily, but flexible matching is better
                 const dateKey = new Date(p.t * 1000).toISOString().split('T')[0];
                 priceMap.set(dateKey, p.c);
             });
 
             let rawHistory = [];
-            const resData = response.data;
-
+            const resData = liquidation;
             if (Array.isArray(resData)) {
                 rawHistory = resData[0]?.history || resData;
-            } else if (resData.history) {
+            } else if (resData?.history) {
                 rawHistory = resData.history;
-            } else if (resData.data) {
+            } else if (resData?.data) {
                 rawHistory = resData.data;
             }
 
-            const mapped: HistoricalLiquidation[] = rawHistory.map((item: any) => {
-                const long = item.l || item.long_volume || 0;
-                const short = item.s || item.short_volume || 0;
-                const total = item.amount || (long + short);
+            const min = amountMin && !isNaN(parseFloat(amountMin)) ? parseFloat(amountMin) : 0;
+            const max = amountMax && !isNaN(parseFloat(amountMax)) ? parseFloat(amountMax) : Infinity;
+
+            const mapped: HistoricalLiquidation[] = rawHistory.reduce((acc: HistoricalLiquidation[], item: any) => {
+                const longBase = item.l || item.long_volume || 0;
+                const shortBase = item.s || item.short_volume || 0;
                 const timestamp = item.t || item.time || item.timestamp;
 
-                // Try to find price for this date
                 const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
-                const price = item.price || priceMap.get(dateKey) || 0;
+                const price = Number(item.price || priceMap.get(dateKey) || 0);
 
-                return {
-                    timestamp: timestamp,
-                    long_volume: long,
-                    short_volume: short,
-                    total_volume: total,
-                    long_short_ratio: long / (short || 1),
-                    price: Number(price)
-                };
-            });
+                const longUSD = longBase * (price || 1);
+                const shortUSD = shortBase * (price || 1);
+                const totalUSD = longUSD + shortUSD;
+
+                if (totalUSD >= min && (max === Infinity || totalUSD <= max)) {
+                    acc.push({
+                        timestamp: timestamp,
+                        long_volume: longUSD,
+                        short_volume: shortUSD,
+                        total_volume: totalUSD,
+                        long_short_ratio: longUSD / (shortUSD || 1),
+                        price: price
+                    });
+                }
+                return acc;
+            }, []);
 
             setData(mapped);
-            setStatus({ message: `Successfully fetched ${mapped.length} records with price data`, type: 'success' });
-        } catch (error: any) {
+            setLastFetchTime(Date.now());
+            setStatus({
+                message: isFromCache 
+                    ? `Dados carregados do cache (${mapped.length} registros). Última atualização: ${new Date(lastFetchTime || Date.now()).toLocaleString('pt-BR')}`
+                    : `Dados atualizados (${rawHistory.length} registros). Filtrados para ${mapped.length}.`,
+                type: 'success'
+            });
+        },
+        onError: (error) => {
             console.error('Fetch error:', error);
-            setStatus({ message: error.response?.data?.detail || error.message || 'Error fetching data', type: 'error' });
-        } finally {
-            setIsLoading(false);
+            const errorMessage = error?.message || error?.toString() || 'Error fetching data';
+            setStatus({ message: errorMessage, type: 'error' });
         }
-    };
+    });
 
     useEffect(() => {
         setProcessedData(aggregateByPriceInterval(data, priceInterval));
@@ -213,13 +237,23 @@ export function LiquidationTest() {
                 </div>
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={fetchLiquidationData}
+                        onClick={() => refetch(true)}
                         disabled={isLoading}
                         className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                     >
                         {isLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                        Buscar Dados
+                        Atualizar Dados
                     </button>
+                    {isFromCache && (
+                        <button
+                            onClick={() => refetch(true)}
+                            disabled={isLoading}
+                            className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm font-medium hover:bg-secondary/80 disabled:opacity-50"
+                        >
+                            <Clock className="h-4 w-4" />
+                            Forçar Refresh
+                        </button>
+                    )}
                 </div>
             </div>
 

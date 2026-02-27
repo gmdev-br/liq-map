@@ -785,55 +785,17 @@ async def compat_liquidation_history(
             
             # A API Coinalyze pode retornar vários formatos. Vamos normalizar para uma lista.
             history_to_filter = []
+            
+            # Detect structure and extract history
+            # A API Coinalyze retorna volumes em base currency (BTC, ETH, etc.)
+            # A filtragem por USD é mais precisa no frontend onde temos o preço.
+            # Retornamos os dados brutos.
             results = data
-            
-            if isinstance(data, list):
-                if len(data) > 0 and isinstance(data[0], dict) and "history" in data[0]:
-                    # Caso 1: [ {"symbol": "...", "history": [...]}, ... ]
-                    history_to_filter = data[0]["history"]
-                else:
-                    # Caso 2: [...] (Direct list)
-                    history_to_filter = data
-            elif isinstance(data, dict):
-                # Caso 3: {"history": [...]} ou {"data": [...]}
-                history_to_filter = data.get("history", data.get("data", []))
-            
-            # Filtrar por amount_min e amount_max
-            if amount_min is not None or amount_max is not None:
-                filtered_history = []
-                for item in history_to_filter:
-                    # Coinalyze usa 'l' e 's' para volumes, ou 'amount' / 'value_usd'
-                    long_vol = item.get('l', item.get('long_volume', 0))
-                    short_vol = item.get('s', item.get('short_volume', 0))
-                    val = item.get('value_usd', item.get('amount', long_vol + short_vol))
-                    
-                    if amount_min is not None and val < amount_min:
-                        continue
-                    if amount_max is not None and val > amount_max:
-                        continue
-                    filtered_history.append(item)
-                
-                logger.info(f"[COMPAT] Filtro aplicado: {len(history_to_filter)} -> {len(filtered_history)} (min={amount_min}, max={amount_max})")
-                
-                # Re-atribuir os dados filtrados de volta na estrutura original
-                if isinstance(data, list):
-                    if len(data) > 0 and isinstance(data[0], dict) and "history" in data[0]:
-                        data[0]["history"] = filtered_history
-                        results = data
-                    else:
-                        results = filtered_history
-                elif isinstance(data, dict):
-                    if "history" in data:
-                        data["history"] = filtered_history
-                    elif "data" in data:
-                        data["data"] = filtered_history
-                    results = data
-            else:
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "history" in data[0]:
                 results = data
-                
+            
             # Salva no cache por 5 minutos
             cache.set(cache_key, results, ttl=300)
-            
             return results
         else:
             return {
@@ -955,3 +917,59 @@ async def compat_price_history(
         pass
     
     return []
+@compat_router.get("/api/debug-liquidation")
+async def debug_liquidation_history(
+    symbols: str = Query(..., description="Símbolos separados por vírgula"),
+    interval: str = Query("daily", description="Intervalo: daily, hourly"),
+    from_time: int = Query(..., alias="from", description="Timestamp Unix de início"),
+    to_time: int = Query(..., alias="to", description="Timestamp Unix de fim"),
+    amount_min: Optional[float] = Query(None, description="Valor mínimo"),
+    amount_max: Optional[float] = Query(None, description="Valor máximo")
+):
+    coinalyze_url = "https://api.coinalyze.net/v1/liquidation-history"
+    params = {
+        "symbols": symbols,
+        "interval": interval,
+        "api_key": settings.COINALYZE_API_KEY,
+        "from": from_time,
+        "to": to_time
+    }
+    
+    response = requests.get(coinalyze_url, params=params, timeout=30)
+    if response.status_code != 200:
+        return {"error": response.status_code, "text": response.text}
+        
+    raw_data = response.json()
+    
+    # Simple extraction for debug
+    history = []
+    if isinstance(raw_data, list) and len(raw_data) > 0:
+        history = raw_data[0].get("history", raw_data)
+    elif isinstance(raw_data, dict):
+        history = raw_data.get("history", raw_data.get("data", []))
+    
+    filtered = []
+    for item in history:
+        l = item.get('l', 0)
+        s = item.get('s', 0)
+        v = item.get('v', 0)
+        amt = item.get('amount', 0)
+        val_usd = item.get('value_usd', 0)
+        
+        calc = val_usd or amt or v or (l + s)
+        
+        if amount_min and calc < amount_min: continue
+        if amount_max and calc > amount_max: continue
+        filtered.append({
+            "raw": item,
+            "calculated_value": calc,
+            "included": True
+        })
+
+    return {
+        "raw_response_sample": raw_data[0] if isinstance(raw_data, list) and len(raw_data) > 0 else raw_data,
+        "total_items": len(history),
+        "filtered_items": len(filtered),
+        "params": {"min": amount_min, "max": amount_max},
+        "sample_filtered": filtered[:5]
+    }
