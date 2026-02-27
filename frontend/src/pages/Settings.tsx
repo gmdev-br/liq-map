@@ -1,14 +1,20 @@
 import { useState, useEffect } from 'react';
-import { Save, Moon, Sun, Database, Key, RefreshCw, Trash2 } from 'lucide-react';
+import { Save, Moon, Sun, Database, Key, RefreshCw, Trash2, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useStore } from '@/store';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { clsx } from 'clsx';
 import { toast } from 'sonner';
+import axios from 'axios';
+
+type ValidationStatus = 'idle' | 'validating' | 'success' | 'error';
 
 export function Settings() {
   const { settings, setSettings } = useStore();
   const [apiKey, setApiKey] = useState(settings.apiKey);
   const [cacheDuration, setCacheDuration] = useState(settings.cacheDuration);
+  const [provider, setProvider] = useState<'coinapi' | 'coinalyze'>('coinapi');
+  const [validationStatus, setValidationStatus] = useState<ValidationStatus>('idle');
+  const [validationMessage, setValidationMessage] = useState('');
 
   useEffect(() => {
     // Load API key from localStorage on mount
@@ -16,12 +22,75 @@ export function Settings() {
     if (storedKey) {
       setApiKey(storedKey);
     }
+    
+    // Load provider preference
+    const storedProvider = localStorage.getItem('coinglass_provider');
+    if (storedProvider === 'coinapi' || storedProvider === 'coinalyze') {
+      setProvider(storedProvider);
+    }
   }, []);
 
-  const handleSaveApiKey = () => {
-    localStorage.setItem('coinglass_api_key', apiKey);
-    setSettings({ apiKey });
-    toast.success('API Key saved successfully');
+  const validateApiKey = async (key: string, prov: 'coinapi' | 'coinalyze'): Promise<boolean> => {
+    setValidationStatus('validating');
+    setValidationMessage('');
+    
+    try {
+      const response = await axios.post('/api/v1/settings/validate-api-key', {
+        api_key: key,
+        provider: prov
+      });
+      
+      if (response.data.valid) {
+        setValidationStatus('success');
+        setValidationMessage(response.data.message || '✓ API key válida');
+        return true;
+      } else {
+        setValidationStatus('error');
+        setValidationMessage(response.data.message || 'Chave de API inválida ou expirada');
+        return false;
+      }
+    } catch (error: any) {
+      // If endpoint is not available, allow saving anyway (backward compatibility)
+      if (error.response?.status === 404 || error.code === 'ERR_NETWORK') {
+        console.warn('Validation endpoint not available, allowing save');
+        setValidationStatus('idle');
+        setValidationMessage('');
+        return true;
+      }
+      
+      const errorMessage = error.response?.data?.message || 'Erro ao validar API key';
+      setValidationStatus('error');
+      setValidationMessage(errorMessage);
+      return false;
+    }
+  };
+
+  const handleSaveApiKey = async () => {
+    if (!apiKey.trim()) {
+      toast.error('Por favor, insira uma API key');
+      return;
+    }
+
+    // Validate before saving
+    const isValid = await validateApiKey(apiKey, provider);
+    
+    if (isValid) {
+      localStorage.setItem('coinglass_api_key', apiKey);
+      localStorage.setItem('coinglass_provider', provider);
+      setSettings({ apiKey });
+      
+      if (validationStatus !== 'idle') {
+        toast.success('API Key saved successfully');
+      }
+      
+      // Reset validation status after successful save
+      setTimeout(() => {
+        setValidationStatus('idle');
+        setValidationMessage('');
+      }, 3000);
+    } else {
+      toast.error(validationMessage || 'API key inválida');
+    }
   };
 
   const handleClearCache = () => {
@@ -60,23 +129,75 @@ export function Settings() {
         />
         <CardContent className="space-y-4">
           <div>
+            <label className="text-sm font-medium">Provider</label>
+            <div className="mt-2 flex gap-2">
+              <select
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as 'coinapi' | 'coinalyze')}
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="coinapi">CoinAPI</option>
+                <option value="coinalyze">CoinALyze</option>
+              </select>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Select your data provider
+            </p>
+          </div>
+
+          <div>
             <label className="text-sm font-medium">API Key</label>
             <div className="mt-2 flex gap-2">
               <input
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  // Reset validation when user types
+                  if (validationStatus !== 'idle') {
+                    setValidationStatus('idle');
+                    setValidationMessage('');
+                  }
+                }}
                 placeholder="Enter your API key"
                 className="flex-1 h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
               />
               <button
                 onClick={handleSaveApiKey}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                disabled={validationStatus === 'validating'}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Save className="h-4 w-4" />
+                {validationStatus === 'validating' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
                 Save
               </button>
             </div>
+            
+            {/* Validation feedback */}
+            {validationStatus === 'validating' && (
+              <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Validando API key...
+              </div>
+            )}
+            
+            {validationStatus === 'success' && (
+              <div className="mt-2 flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                <CheckCircle className="h-4 w-4" />
+                {validationMessage}
+              </div>
+            )}
+            
+            {validationStatus === 'error' && (
+              <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                <XCircle className="h-4 w-4" />
+                {validationMessage}
+              </div>
+            )}
+            
             <p className="mt-2 text-xs text-muted-foreground">
               Get your API key from the Coinglass API dashboard
             </p>
@@ -87,9 +208,16 @@ export function Settings() {
               <Key className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm font-medium">API Status</span>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {apiKey ? 'API key configured' : 'No API key configured'}
-            </p>
+            <div className="mt-1 flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {apiKey ? 'API key configured' : 'No API key configured'}
+              </p>
+              {apiKey && (
+                <span className="text-xs text-muted-foreground bg-muted-foreground/10 px-2 py-1 rounded">
+                  {provider.toUpperCase()}
+                </span>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>

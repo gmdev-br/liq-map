@@ -53,6 +53,9 @@ frontend/yarn-error.log*
 *.sqlite3
 coinglass.db
 
+# API Keys (sensível)
+coinalyze_keys.json
+
 # IDEs / OS
 .vscode/
 .idea/

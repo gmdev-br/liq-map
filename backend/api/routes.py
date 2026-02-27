@@ -3,8 +3,11 @@ Rotas da API Principal
 Endpoints para liquidações, preços, exchanges e símbolos.
 """
 
+import httpx
 import requests
 import logging
+import json
+import os
 from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +23,81 @@ logger = logging.getLogger(__name__)
 
 # Router
 router = APIRouter(prefix="/api/v1", tags=["API"])
+
+# Arquivo para salvar API keys validadas
+API_KEYS_FILE = "coinalyze_keys.json"
+
+
+def _get_api_keys_file_path() -> str:
+    """Retorna o caminho do arquivo de chaves de API"""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), API_KEYS_FILE)
+
+
+def load_saved_api_keys() -> dict:
+    """Carrega as chaves de API salvas em arquivo"""
+    try:
+        file_path = _get_api_keys_file_path()
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Erro ao carregar chaves de API salvas: {e}")
+    return {}
+
+
+def save_api_key(provider: str, api_key: str) -> bool:
+    """
+    Salva a chave de API validada em arquivo e atualiza a configuração em memória.
+    
+    Args:
+        provider: O provedor ('coinapi' ou 'coinalyze')
+        api_key: A chave de API a ser salva
+    
+    Returns:
+        True se salvou com sucesso, False caso contrário
+    """
+    try:
+        # Carrega chaves existentes
+        keys = load_saved_api_keys()
+        
+        # Adiciona/atualiza a chave
+        keys[provider] = {
+            "api_key": api_key,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # Salva no arquivo
+        file_path = _get_api_keys_file_path()
+        with open(file_path, 'w') as f:
+            json.dump(keys, f, indent=2)
+        
+        # Atualiza a configuração em memória
+        if provider == "coinalyze":
+            settings.COINALYZE_API_KEY = api_key
+        elif provider == "coinapi":
+            settings.COINAPI_KEY = api_key
+        
+        logger.info(f"Chave de API do {provider} salva com sucesso")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erro ao salvar chave de API: {e}")
+        return False
+
+
+def initialize_saved_api_keys():
+    """Inicializa as chaves de API salvas ao iniciar o servidor"""
+    keys = load_saved_api_keys()
+    if "coinalyze" in keys:
+        settings.COINALYZE_API_KEY = keys["coinalyze"].get("api_key", "FREE")
+        logger.info(f"API key da Coinalyze carregada: {settings.COINALYZE_API_KEY[:10]}...")
+    if "coinapi" in keys:
+        settings.COINAPI_KEY = keys["coinapi"].get("api_key", "")
+        logger.info(f"API key da CoinAPI carregada")
+
+
+# Inicializa as chaves ao importar o módulo
+initialize_saved_api_keys()
 
 
 # ==================== MODELS ====================
@@ -70,7 +148,6 @@ async def get_liquidation_history(
     to_time: Optional[int] = Query(None, description="Timestamp Unix de fim"),
     amount_min: Optional[float] = Query(None, description="Valor mínimo de liquidação em USD"),
     amount_max: Optional[float] = Query(None, description="Valor máximo de liquidação em USD"),
-    api_key: str = Query("FREE", description="API Key Coinalyze"),
     db: Session = Depends(get_db),
     current_key: str = Depends(get_current_api_key)
 ):
@@ -82,6 +159,12 @@ async def get_liquidation_history(
     # Valor padrão se symbols não for fornecido
     if not symbols:
         symbols = "BTC"
+
+    # Valores padrão: últimos 30 dias se não fornecidos
+    if from_time is None:
+        from_time = int((datetime.now() - timedelta(days=30)).timestamp())
+    if to_time is None:
+        to_time = int(datetime.now().timestamp())
 
     # Constrói chave de cache
     cache_key = f"liquidation:{symbols}:{interval}:{from_time}:{to_time}"
@@ -96,39 +179,67 @@ async def get_liquidation_history(
     params = {
         "symbols": symbols,
         "interval": interval,
-        "api_key": api_key
+        "api_key": settings.COINALYZE_API_KEY,
+        "from": from_time,
+        "to": to_time
     }
     
-    if from_time:
-        params["from"] = from_time
-    if to_time:
-        params["to"] = to_time
+    # Log detalhado para debug do erro 502
+    api_key_display = settings.COINALYZE_API_KEY
+    if api_key_display and len(api_key_display) > 8:
+        api_key_display = f"{api_key_display[:4]}...{api_key_display[-4:]}"
+    logger.info(f"[LIQUIDATIONS] Requisição para Coinalyze - API Key: {api_key_display}, Símbolos: {symbols}, Intervalo: {interval}, from_time: {from_time}, to_time: {to_time}")
     
     try:
         response = requests.get(coinalyze_url, params=params, timeout=30)
         
+        # Log do status da resposta
+        logger.info(f"[LIQUIDATIONS] Resposta Coinalyze - Status: {response.status_code}, Símbolos: {symbols}")
+        
         if response.status_code == 200:
             data = response.json()
             
-            # Filtrar por amount_min e amount_max após receber os dados da API
+            # Transforma os dados para o formato esperado pelo frontend
+            # API Coinalyze retorna: time, value_usd, exchange, l (longs), s (shorts), price
+            # Frontend espera: timestamp, amount, exchange, side, price
+            transformed_data = []
+            for item in data:
+                # Determina o lado predominante (long ou short)
+                long_liq = item.get('l', 0)
+                short_liq = item.get('s', 0)
+                side = "long" if long_liq > short_liq else "short"
+                
+                transformed_data.append({
+                    "id": str(item.get("time", "")),  # Usa time como id
+                    "timestamp": item.get("time", 0),
+                    "amount": item.get("value_usd", 0),
+                    "exchange": item.get("exchange", "unknown"),
+                    "side": side,
+                    "price": item.get("price", 0),
+                    "symbol": item.get("symbol", ""),
+                    "long_liquidation": long_liq,
+                    "short_liquidation": short_liq
+                })
+            
+            # Usa os dados transformados para filtrar por amount_min e amount_max
             if amount_min is not None or amount_max is not None:
                 filtered_data = []
-                for item in data:
-                    value_usd = item.get('value_usd', 0)
-                    if amount_min is not None and value_usd < amount_min:
+                for item in transformed_data:
+                    amount = item.get('amount', 0)
+                    if amount_min is not None and amount < amount_min:
                         continue
-                    if amount_max is not None and value_usd > amount_max:
+                    if amount_max is not None and amount > amount_max:
                         continue
                     filtered_data.append(item)
-                data = filtered_data
+                transformed_data = filtered_data
             
             # Salva no cache por 5 minutos
-            cache.set(cache_key, data, ttl=300)
+            cache.set(cache_key, transformed_data, ttl=300)
             
             # Opcional: salva no banco de dados
             # bulk_create_liquidations(db, data)
             
-            return data
+            return transformed_data
         elif response.status_code == 401:
             # Handle upstream auth failure gracefully
             logger.warning(f"Upstream API (Coinalyze) returned 401 Unauthorized for symbols: {symbols}. Returning empty list.")
@@ -502,6 +613,88 @@ async def get_symbols(
     return {"symbols": symbols}
 
 
+# ==================== SETTINGS - API KEY VALIDATION ====================
+
+class ValidateAPIKeyRequest(BaseModel):
+    """Modelo para requisição de validação de API key"""
+    api_key: str
+    provider: str  # 'coinapi' ou 'coinalyze'
+
+
+@router.post("/settings/validate-api-key")
+async def validate_api_key(
+    request: ValidateAPIKeyRequest,
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Valida uma chave de API externa (CoinAPI ou Coinalyze).
+    
+    Args:
+        api_key: A chave de API a ser validada
+        provider: O provedor ('coinapi' ou 'coinalyze')
+    
+    Returns:
+        JSON com {valid: bool, message: str}
+    """
+    api_key = request.api_key.strip()
+    provider = request.provider.lower().strip()
+    
+    if not api_key:
+        return {"valid": False, "message": "API key não pode estar vazia"}
+    
+    if provider not in ["coinapi", "coinalyze"]:
+        return {"valid": False, "message": "Provedor inválido. Use 'coinapi' ou 'coinalyze'"}
+    
+    timeout = httpx.Timeout(10.0, connect=10.0)
+    
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if provider == "coinapi":
+                # Valida CoinAPI fazendo request para taxa de câmbio
+                response = await client.get(
+                    "https://rest.coinapi.io/v1/exchangerate/BTC/USD",
+                    headers={"X-CoinAPI-Key": api_key}
+                )
+            else:
+                # Valida Coinalyze fazendo request para histórico de liquidações
+                end_time = datetime.now()
+                start_time = end_time - timedelta(days=7)
+                
+                response = await client.get(
+                    "https://api.coinalyze.net/v1/liquidation-history",
+                    params={
+                        "api_key": api_key,
+                        "symbols": "BTC",
+                        "interval": "daily",
+                        "from": int(start_time.timestamp()),
+                        "to": int(end_time.timestamp())
+                    }
+                )
+            
+            # Verifica se a resposta está no range de sucesso (200-299)
+            if 200 <= response.status_code < 300:
+                # Salva a chave validada
+                save_api_key(provider, api_key)
+                return {"valid": True, "message": "API key válida e salva nas configurações"}
+            elif response.status_code == 401:
+                return {"valid": False, "message": "API key inválida ou não autorizada"}
+            elif response.status_code == 429:
+                return {"valid": False, "message": "Limite de requisições excedido"}
+            else:
+                return {
+                    "valid": False, 
+                    "message": f"Erro do provedor (HTTP {response.status_code})"
+                }
+                
+    except httpx.TimeoutException:
+        return {"valid": False, "message": "Tempo limite excedido (timeout)"}
+    except httpx.RequestError as e:
+        return {"valid": False, "message": f"Erro de conexão: {str(e)}"}
+    except Exception as e:
+        logger.exception("Erro ao validar API key")
+        return {"valid": False, "message": f"Erro interno: {str(e)}"}
+
+
 # ==================== HEALTH CHECK ====================
 
 @router.get("/health")
@@ -558,7 +751,7 @@ async def compat_liquidation_history(
     params = {
         "symbols": symbols,
         "interval": interval,
-        "api_key": api_key,
+        "api_key": settings.COINALYZE_API_KEY,
         "from": from_time,
         "to": to_time
     }

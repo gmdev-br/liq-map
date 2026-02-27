@@ -53,7 +53,7 @@ export function PriceChart({
             <XAxis dataKey={xAxisKey} className="text-xs" />
             <YAxis 
               className="text-xs" 
-              domain={[50000, 100000]} 
+              domain={['auto', 'auto']}
               ticks={priceTicks}
             />
             <Tooltip
@@ -73,7 +73,7 @@ export function PriceChart({
             <XAxis dataKey={xAxisKey} className="text-xs" />
             <YAxis 
               className="text-xs" 
-              domain={[50000, 100000]} 
+              domain={['auto', 'auto']}
               ticks={priceTicks}
             />
             <Tooltip
@@ -99,7 +99,7 @@ export function PriceChart({
             <XAxis dataKey={xAxisKey} className="text-xs" />
             <YAxis 
               className="text-xs" 
-              domain={[50000, 100000]} 
+              domain={['auto', 'auto']}
               ticks={priceTicks}
             />
             <Tooltip
