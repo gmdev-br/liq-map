@@ -16,7 +16,10 @@ export function Alerts() {
 
   const { data: alerts, isLoading } = useQuery({
     queryKey: ['alerts'],
-    queryFn: () => alertsApi.getAll().then((res) => res.data),
+    queryFn: async () => {
+      const response = await alertsApi.getAll();
+      return response.data.alerts;
+    },
   });
 
   const createMutation = useMutation({

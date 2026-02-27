@@ -8,6 +8,8 @@ import type {
   LiquidationStats,
   TechnicalIndicators,
   PaginatedResponse,
+  ExchangesResponse,
+  AlertsResponse,
 } from '@/types';
 
 const api = axios.create({
@@ -145,7 +147,7 @@ export const pricesApi = {
 
 // Exchanges
 export const exchangesApi = {
-  getAll: () => api.get<Exchange[]>('/exchanges'),
+  getAll: () => api.get<ExchangesResponse>('/exchanges'),
   getOne: (id: string) => api.get<Exchange>(`/exchanges/${id}`),
 };
 
@@ -157,7 +159,7 @@ export const symbolsApi = {
 
 // Alerts
 export const alertsApi = {
-  getAll: () => api.get<Alert[]>('/alerts'),
+  getAll: () => api.get<AlertsResponse>('/alerts'),
   create: (data: {
     symbol: string;
     condition: 'above' | 'below' | 'crosses';

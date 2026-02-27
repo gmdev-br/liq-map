@@ -15,7 +15,12 @@ export function Prices() {
   // Fetch exchanges
   const { data: exchanges } = useQuery({
     queryKey: ['exchanges'],
-    queryFn: () => exchangesApi.getAll().then((res) => res.data),
+    queryFn: async () => {
+      const response = await exchangesApi.getAll();
+      console.log('Exchanges API response:', response);
+      console.log('Exchanges data:', response.data);
+      return response.data.exchanges;
+    },
   });
 
   // Fetch symbols for selected exchange

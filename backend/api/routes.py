@@ -392,32 +392,56 @@ async def get_exchanges(
             {
                 "id": "binance",
                 "name": "Binance",
-                "url": "https://www.binance.com"
+                "status": "active",
+                "api_status": "online",
+                "url": "https://www.binance.com",
+                "docs_url": "https://binance-docs.github.io/apidocs",
+                "websocket_url": "wss://stream.binance.com:9443"
             },
             {
                 "id": "bybit",
                 "name": "Bybit",
-                "url": "https://www.bybit.com"
+                "status": "active",
+                "api_status": "online",
+                "url": "https://www.bybit.com",
+                "docs_url": "https://bybit-exchange.github.io/docs",
+                "websocket_url": "wss://stream.bybit.com/v5/public"
             },
             {
                 "id": "okx",
                 "name": "OKX",
-                "url": "https://www.okx.com"
+                "status": "active",
+                "api_status": "online",
+                "url": "https://www.okx.com",
+                "docs_url": "https://www.okx.com/docs-v5",
+                "websocket_url": "wss://ws.okx.com:8443/ws/v5/public"
             },
             {
                 "id": "huobi",
                 "name": "Huobi",
-                "url": "https://www.huobi.com"
+                "status": "active",
+                "api_status": "online",
+                "url": "https://www.huobi.com",
+                "docs_url": "https://huobiapi.github.io/docs",
+                "websocket_url": "wss://api.huobi.pro/ws"
             },
             {
                 "id": "gate",
                 "name": "Gate.io",
-                "url": "https://www.gate.io"
+                "status": "active",
+                "api_status": "online",
+                "url": "https://www.gate.io",
+                "docs_url": "https://www.gate.io/docs",
+                "websocket_url": "wss://api.gate.io/ws/v4"
             },
             {
                 "id": "kucoin",
                 "name": "KuCoin",
-                "url": "https://www.kucoin.com"
+                "status": "active",
+                "api_status": "online",
+                "url": "https://www.kucoin.com",
+                "docs_url": "https://docs.kucoin.com",
+                "websocket_url": "wss://push-private.kucoin.com/realtime"
             }
         ]
     }

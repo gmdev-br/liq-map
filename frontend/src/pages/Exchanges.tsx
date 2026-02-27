@@ -8,7 +8,10 @@ import type { Exchange } from '@/types';
 export function Exchanges() {
   const { data: exchanges, isLoading, refetch } = useQuery({
     queryKey: ['exchanges'],
-    queryFn: () => exchangesApi.getAll().then((res) => res.data),
+    queryFn: async () => {
+      const response = await exchangesApi.getAll();
+      return response.data.exchanges;
+    },
   });
 
   // Mock exchanges data for display

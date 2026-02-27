@@ -97,3 +97,12 @@ export interface ApiError {
   detail: string;
   code?: string;
 }
+
+export interface ExchangesResponse {
+  exchanges: Exchange[];
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+  count: number;
+}
