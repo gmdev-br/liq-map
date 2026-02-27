@@ -189,6 +189,7 @@ async def websocket_main(websocket: WebSocket):
     - Enviar mensagem de subscribe: {"action": "subscribe", "streams": ["liquidation", "price"]}
     """
     from backend.websocket import ws_manager
+    from fastapi import WebSocketDisconnect
     
     await websocket.accept()
     
@@ -210,18 +211,31 @@ async def websocket_main(websocket: WebSocket):
                 message = json.loads(data)
                 
                 if message.get("action") == "subscribe":
+                    # Aceita "stream" (singular) ou "streams" (plural)
                     streams = message.get("streams", [])
+                    if not streams and message.get("stream"):
+                        streams = [message.get("stream")]
+                        
                     for stream in streams:
                         if stream in ["liquidation", "price"]:
-                            subscriptions.add(stream)
+                            if stream not in subscriptions:
+                                await ws_manager.connect(websocket, stream, accept_connection=False)
+                                subscriptions.add(stream)
+                                
                     await websocket.send_json({
                         "type": "subscribed",
                         "streams": list(subscriptions)
                     })
                 elif message.get("action") == "unsubscribe":
                     streams = message.get("streams", [])
+                    if not streams and message.get("stream"):
+                        streams = [message.get("stream")]
+                        
                     for stream in streams:
-                        subscriptions.discard(stream)
+                        if stream in subscriptions:
+                            ws_manager.disconnect(websocket, stream)
+                            subscriptions.discard(stream)
+                            
                     await websocket.send_json({
                         "type": "unsubscribed",
                         "streams": list(subscriptions)
@@ -230,8 +244,12 @@ async def websocket_main(websocket: WebSocket):
             except json.JSONDecodeError:
                 pass
                 
+    except WebSocketDisconnect:
+        ws_manager.disconnect_from_all(websocket)
     except Exception as e:
         logger.error(f"Erro na conexão WebSocket /ws: {e}")
+        ws_manager.disconnect_from_all(websocket)
+
 
 
 @app.websocket("/ws/liquidation")

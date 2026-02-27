@@ -4,6 +4,7 @@ Endpoints para liquidações, preços, exchanges e símbolos.
 """
 
 import requests
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +15,8 @@ from backend.config import settings
 from backend.database import get_db
 from backend.auth import get_current_api_key
 from backend.cache import cache, cached
+
+logger = logging.getLogger(__name__)
 
 # Router
 router = APIRouter(prefix="/api/v1", tags=["API"])
@@ -61,7 +64,7 @@ class SymbolResponse(BaseModel):
 
 @router.get("/liquidations")
 async def get_liquidation_history(
-    symbols: str = Query(..., description="Símbolos separados por vírgula (ex: BTC,ETH)"),
+    symbols: Optional[str] = Query(None, description="Símbolos separados por vírgula (ex: BTC,ETH)"),
     interval: str = Query("daily", description="Intervalo: daily, hourly"),
     from_time: Optional[int] = Query(None, description="Timestamp Unix de início"),
     to_time: Optional[int] = Query(None, description="Timestamp Unix de fim"),
@@ -76,6 +79,10 @@ async def get_liquidation_history(
     
     Migração do endpoint Flask /api/liquidation-history
     """
+    # Valor padrão se symbols não for fornecido
+    if not symbols:
+        symbols = "BTC"
+
     # Constrói chave de cache
     cache_key = f"liquidation:{symbols}:{interval}:{from_time}:{to_time}"
     
@@ -122,16 +129,36 @@ async def get_liquidation_history(
             # bulk_create_liquidations(db, data)
             
             return data
+        elif response.status_code == 401:
+            # Handle upstream auth failure gracefully
+            logger.warning(f"Upstream API (Coinalyze) returned 401 Unauthorized for symbols: {symbols}. Returning empty list.")
+            return []
         else:
             raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Erro da API Coinalyze: {response.text}"
+                status_code=502, # Bad Gateway - upstream error
+                detail=f"Erro da API Coinalyze ({response.status_code}): {response.text}"
             )
     except requests.RequestException as e:
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao conectar com Coinalyze: {str(e)}"
         )
+
+
+@router.get("/liquidations/{liquidation_id}")
+async def get_liquidation(
+    liquidation_id: str,
+    db: Session = Depends(get_db),
+    current_key: str = Depends(get_current_api_key)
+):
+    """Obtém uma liquidação específica do banco de dados local"""
+    from backend.database import get_liquidation_by_id
+    
+    liquidation = get_liquidation_by_id(db, liquidation_id)
+    if not liquidation:
+        raise HTTPException(status_code=404, detail="Liquidação não encontrada")
+    
+    return liquidation
 
 
 @router.get("/liquidations/stats")
@@ -394,6 +421,28 @@ async def get_exchanges(
             }
         ]
     }
+
+
+@router.get("/exchanges/{exchange_id}")
+async def get_exchange(
+    exchange_id: str,
+    current_key: str = Depends(get_current_api_key)
+):
+    """Obtém detalhes de uma exchange específica"""
+    exchanges = [
+        {"id": "binance", "name": "Binance", "url": "https://www.binance.com"},
+        {"id": "bybit", "name": "Bybit", "url": "https://www.bybit.com"},
+        {"id": "okx", "name": "OKX", "url": "https://www.okx.com"},
+        {"id": "huobi", "name": "Huobi", "url": "https://www.huobi.com"},
+        {"id": "gate", "name": "Gate.io", "url": "https://www.gate.io"},
+        {"id": "kucoin", "name": "KuCoin", "url": "https://www.kucoin.com"}
+    ]
+    
+    exchange = next((e for e in exchanges if e["id"] == exchange_id.lower()), None)
+    if not exchange:
+        raise HTTPException(status_code=404, detail="Exchange não encontrada")
+    
+    return exchange
 
 
 # ==================== SYMBOLS ====================

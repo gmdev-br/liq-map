@@ -1,197 +1,126 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useStore } from '@/store';
-import type { WebSocketMessage, Liquidation, Price, Alert } from '@/types';
 
-type MessageHandler<T> = (data: T) => void;
+// Shared WebSocket instance (singleton)
+let sharedWs: WebSocket | null = null;
+let reconnectTimer: any = null;
+let reconnectAttempts = 0;
+let isConnecting = false;
+const MAX_BACKOFF = 30000;
+const INITIAL_BACKOFF = 2000;
 
-interface UseWebSocketOptions {
-  onLiquidation?: MessageHandler<Liquidation>;
-  onPrice?: MessageHandler<Price>;
-  onAlert?: MessageHandler<Alert>;
-}
+// Set of active listeners/subscribers for the shared instance
+const listeners = new Set<(data: any) => void>();
 
-// Maximum number of reconnection attempts
-const MAX_RECONNECT_ATTEMPTS = 10;
-// Base delay between reconnection attempts (ms)
-const RECONNECT_BASE_DELAY = 5000;
-
-// Shared WebSocket connection state
-let sharedWsRef: WebSocket | null = null;
-let sharedReconnectAttempts = 0;
-let sharedIsConnecting = false;
-let sharedReconnectTimeoutRef: ReturnType<typeof setTimeout> | null = null;
-
-export function useWebSocket(options: UseWebSocketOptions = {}) {
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectAttemptsRef = useRef(0);
+export function useWebSocket() {
   const { setWsConnected } = useStore();
-  const [isConnected, setIsConnected] = useState(false);
-
-  // Debug log to track reconnection attempts
-  const logReconnectAttempt = useCallback((attempt: number) => {
-    console.log(`[WebSocket] Reconnection attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS}`);
-  }, []);
+  const [localConnected, setLocalConnected] = useState(false);
+  const [lastMessage, setLastMessage] = useState<any>(null);
 
   const connect = useCallback(() => {
-    // Prevent multiple simultaneous connection attempts
-    if (sharedIsConnecting) {
-      console.log('[WebSocket] Connection attempt already in progress, skipping...');
+    if (isConnecting || (sharedWs && (sharedWs.readyState === WebSocket.OPEN || sharedWs.readyState === WebSocket.CONNECTING))) {
       return;
     }
 
-    // Check if we already have a valid connection
-    if (sharedWsRef && sharedWsRef.readyState === WebSocket.OPEN) {
-      console.log('[WebSocket] Already connected, skipping...');
-      setIsConnected(true);
-      return;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
 
-    // Check if we've exceeded max reconnection attempts
-    if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-      console.error(`[WebSocket] Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Stopping.`);
-      setWsConnected(false);
-      setIsConnected(false);
-      return;
-    }
-
+    // Connect DIRECTLY to backend — bypasses Vite proxy to avoid HMR conflicts
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
-    try {
-      sharedIsConnecting = true;
-      console.log(`[WebSocket] Connecting to ${wsUrl} (attempt ${reconnectAttemptsRef.current + 1})...`);
-      
-      const ws = new WebSocket(wsUrl);
-      
-      ws.onopen = () => {
-        console.log('[WebSocket] Connected successfully');
-        sharedIsConnecting = false;
-        sharedReconnectAttempts = 0;
-        reconnectAttemptsRef.current = 0;
-        setWsConnected(true);
-        setIsConnected(true);
-        
-        // Subscribe to all streams
-        ws.send(JSON.stringify({
-          action: 'subscribe',
-          streams: ['liquidation', 'price']
-        }));
-      };
-      
-      ws.onmessage = (event) => {
-        try {
-          const message: WebSocketMessage = JSON.parse(event.data);
-          
-          switch (message.type) {
-            case 'liquidation':
-              options.onLiquidation?.(message.data as Liquidation);
-              break;
-            case 'price':
-              options.onPrice?.(message.data as Price);
-              break;
-            case 'alert':
-              options.onAlert?.(message.data as Alert);
-              // Show browser notification for alerts
-              if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification('Coinglass Alert', {
-                  body: `Alert triggered: ${JSON.stringify(message.data)}`,
-                });
-              }
-              break;
-          }
-        } catch (error) {
-          console.error('[WebSocket] Failed to parse message:', error);
-        }
-      };
-      
-      ws.onclose = (event) => {
-        console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
-        sharedIsConnecting = false;
-        sharedWsRef = null;
-        setWsConnected(false);
-        setIsConnected(false);
-        
-        // Increment reconnection attempts
-        reconnectAttemptsRef.current++;
-        sharedReconnectAttempts = reconnectAttemptsRef.current;
-        
-        // Schedule reconnection with delay
-        if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-          logReconnectAttempt(reconnectAttemptsRef.current);
-          const delay = RECONNECT_BASE_DELAY;
-          console.log(`[WebSocket] Scheduling reconnection in ${delay}ms...`);
-          reconnectTimeoutRef.current = setTimeout(connect, delay);
-        } else {
-          console.error(`[WebSocket] Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
-        }
-      };
-      
-      ws.onerror = (error) => {
-        console.error('[WebSocket] Error:', error);
-        sharedIsConnecting = false;
-      };
-      
-      sharedWsRef = ws;
-      wsRef.current = ws;
-    } catch (error) {
-      console.error('[WebSocket] Failed to create connection:', error);
-      sharedIsConnecting = false;
-    }
-  }, [options, setWsConnected, logReconnectAttempt]);
+    const wsUrl = `${protocol}//127.0.0.1:8000/ws`;
 
-  const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    sharedWsRef = null;
-    reconnectAttemptsRef.current = 0;
-    sharedReconnectAttempts = 0;
-  }, []);
+    console.log(`[WebSocket] Connecting to ${wsUrl} (attempt ${reconnectAttempts + 1})...`);
+
+    isConnecting = true;
+    const ws = new WebSocket(wsUrl);
+    sharedWs = ws;
+
+    ws.onopen = () => {
+      console.log('[WebSocket] Shared connection open');
+      isConnecting = false;
+      reconnectAttempts = 0;
+      setWsConnected(true);
+      setLocalConnected(true);
+
+      // Auto-subscribe to main streams
+      ws.send(JSON.stringify({
+        action: 'subscribe',
+        streams: ['liquidation', 'price']
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setLastMessage(data);
+        // Notify any other hooks that might be listening
+        listeners.forEach(listener => listener(data));
+      } catch (e) {
+        console.error('[WebSocket] Error parsing message:', e);
+      }
+    };
+
+    ws.onclose = (event) => {
+      console.log(`[WebSocket] Connection closed (code: ${event.code})`);
+      isConnecting = false;
+      sharedWs = null;
+      setWsConnected(false);
+      setLocalConnected(false);
+
+      if (event.code !== 1000) {
+        const delay = Math.min(INITIAL_BACKOFF * Math.pow(2, reconnectAttempts), MAX_BACKOFF);
+        reconnectAttempts++;
+        console.log(`[WebSocket] Reconnecting in ${delay}ms...`);
+        reconnectTimer = setTimeout(connect, delay);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error('[WebSocket] Error:', error);
+      ws.close();
+    };
+  }, [setWsConnected]);
 
   useEffect(() => {
-    connect();
-    return () => disconnect();
-  }, [connect, disconnect]);
+    const listener = (data: any) => setLastMessage(data);
+    listeners.add(listener);
+
+    if (!sharedWs) {
+      connect();
+    } else if (sharedWs.readyState === WebSocket.OPEN) {
+      setLocalConnected(true);
+    }
+
+    return () => {
+      listeners.delete(listener);
+    };
+  }, [connect]);
 
   return {
-    isConnected,
+    isConnected: localConnected,
+    lastMessage,
+    // Add a helper to send messages through the shared socket
+    send: (msg: any) => {
+      if (sharedWs?.readyState === WebSocket.OPEN) {
+        sharedWs.send(JSON.stringify(msg));
+      }
+    }
   };
 }
 
-// Hook for subscribing to specific channels
-export function useWebSocketChannel<T>(channel: 'liquidation' | 'price', handler: MessageHandler<T>) {
+/**
+ * Compatibility hook for specific channels
+ */
+export function useWebSocketChannel<T>(channel: string, handler: (data: T) => void) {
+  const { lastMessage } = useWebSocket();
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
-    const ws = new WebSocket(wsUrl);
-    
-    ws.onopen = () => {
-      // Subscribe to specific channel
-      ws.send(JSON.stringify({
-        action: 'subscribe',
-        streams: [channel]
-      }));
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handlerRef.current(data);
-      } catch (error) {
-        console.error('Failed to parse message:', error);
-      }
-    };
-    
-    return () => ws.close();
-  }, [channel]);
+    if (lastMessage && lastMessage.type === channel) {
+      handlerRef.current(lastMessage.data);
+    }
+  }, [lastMessage, channel]);
 }

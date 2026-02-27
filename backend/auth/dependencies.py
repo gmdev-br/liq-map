@@ -6,6 +6,7 @@ Suporta API Keys com rate limiting.
 import hashlib
 import secrets
 import time
+import logging
 from typing import Optional, Dict
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import APIKeyHeader
@@ -16,6 +17,8 @@ from backend.database import get_db, get_api_key, verify_api_key
 
 # Header para API Key
 API_KEY_HEADER = APIKeyHeader(name=settings.API_KEY_HEADER, auto_error=False)
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimiter:

@@ -38,7 +38,8 @@ class ConnectionManager:
     async def connect(
         self,
         websocket: WebSocket,
-        stream_type: str
+        stream_type: str,
+        accept_connection: bool = True
     ) -> bool:
         """
         Aceita e registra uma nova conexão WebSocket.
@@ -46,11 +47,13 @@ class ConnectionManager:
         Args:
             websocket: Conexão WebSocket
             stream_type: Tipo de stream ("liquidation" ou "price")
+            accept_connection: Se deve aceitar a conexão (True) ou se já foi aceita (False)
             
         Returns:
             True se conectado, False se limite excedido
         """
-        await websocket.accept()
+        if accept_connection:
+            await websocket.accept()
         
         if stream_type not in self.active_connections:
             stream_type = "liquidation"  # Default
@@ -84,7 +87,7 @@ class ConnectionManager:
     
     def disconnect(self, websocket: WebSocket, stream_type: str) -> None:
         """
-        Remove uma conexão WebSocket.
+        Remove uma conexão WebSocket de um stream específico.
         
         Args:
             websocket: Conexão WebSocket
@@ -98,6 +101,20 @@ class ConnectionManager:
                 f"Desconexão WebSocket: {stream_type} "
                 f"(total: {len(self.active_connections[stream_type])})"
             )
+
+    def disconnect_from_all(self, websocket: WebSocket) -> None:
+        """
+        Remove uma conexão WebSocket de todos os streams.
+        
+        Args:
+            websocket: Conexão WebSocket
+        """
+        for stream_type in self.active_connections:
+            if websocket in self.active_connections[stream_type]:
+                self.active_connections[stream_type].discard(websocket)
+                logger.info(f"Desconectado do stream {stream_type}")
+        
+        self.total_disconnections += 1
     
     async def send_personal_message(
         self,
