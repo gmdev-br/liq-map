@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
     RefreshCw,
     BarChart3,
@@ -9,7 +9,9 @@ import {
     DollarSign,
     TrendingUp,
     TrendingDown,
-    Clock
+    Clock,
+    Download,
+    Upload
 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import {
@@ -25,6 +27,7 @@ import {
 import axios from 'axios';
 import { format } from 'date-fns';
 import { useCacheData } from '@/hooks/useCacheData';
+import { exportToCSV, exportToJSON, importFromCSV, importFromJSON, generateExportFilename } from '@/utils/exportImport';
 
 interface HistoricalLiquidation {
     timestamp: number;
@@ -47,6 +50,81 @@ export function LiquidationTest() {
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleExportCSV = () => {
+        if (processedData.length === 0) {
+            setStatus({ message: 'Nenhum dado para exportar', type: 'error' });
+            return;
+        }
+        const filename = generateExportFilename(symbol, 'csv');
+        const exportData = processedData.map(item => ({
+            data: format(new Date(item.timestamp * 1000), 'dd/MM/yyyy'),
+            timestamp: item.timestamp,
+            preco_medio: item.price,
+            volume_long: item.long_volume,
+            volume_short: item.short_volume,
+            volume_total: item.total_volume,
+            ratio_long_short: item.long_short_ratio
+        }));
+        exportToCSV(exportData, filename);
+        setStatus({ message: `Dados exportados para ${filename}`, type: 'success' });
+    };
+
+    const handleExportJSON = () => {
+        if (processedData.length === 0) {
+            setStatus({ message: 'Nenhum dado para exportar', type: 'error' });
+            return;
+        }
+        const filename = generateExportFilename(symbol, 'json');
+        const exportData = processedData.map(item => ({
+            timestamp: item.timestamp,
+            date: format(new Date(item.timestamp * 1000), 'dd/MM/yyyy HH:mm:ss'),
+            price: item.price,
+            long_volume: item.long_volume,
+            short_volume: item.short_volume,
+            total_volume: item.total_volume,
+            long_short_ratio: item.long_short_ratio
+        }));
+        exportToJSON(exportData, { symbol, months, recordCount: exportData.length }, filename);
+        setStatus({ message: `Dados exportados para ${filename}`, type: 'success' });
+    };
+
+    const handleImportClick = () => {
+        fileInputRef.current?.click();
+    };
+
+    const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        try {
+            setStatus({ message: 'Importando dados...', type: 'loading' });
+            
+            let importedData: any[];
+            if (file.name.endsWith('.json')) {
+                importedData = await importFromJSON(file);
+            } else if (file.name.endsWith('.csv')) {
+                importedData = await importFromCSV(file);
+            } else {
+                setStatus({ message: 'Formato de arquivo não suportado. Use CSV ou JSON.', type: 'error' });
+                return;
+            }
+
+            if (importedData.length === 0) {
+                setStatus({ message: 'Arquivo não contém dados válidos.', type: 'error' });
+                return;
+            }
+
+            setData(importedData);
+            setStatus({ message: `${importedData.length} registros importados com sucesso.`, type: 'success' });
+        } catch (error) {
+            console.error('Import error:', error);
+            setStatus({ message: 'Erro ao importar arquivo. Verifique o formato.', type: 'error' });
+        }
+
+        event.target.value = '';
+    };
 
     const formatCurrency = (value: number) => {
         if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
@@ -254,6 +332,37 @@ export function LiquidationTest() {
                             Forçar Refresh
                         </button>
                     )}
+                    <div className="w-px h-6 bg-border mx-1" />
+                    <button
+                        onClick={handleExportCSV}
+                        disabled={processedData.length === 0}
+                        className="inline-flex items-center gap-2 rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        CSV
+                    </button>
+                    <button
+                        onClick={handleExportJSON}
+                        disabled={processedData.length === 0}
+                        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        JSON
+                    </button>
+                    <button
+                        onClick={handleImportClick}
+                        className="inline-flex items-center gap-2 rounded-md bg-orange-600 px-3 py-2 text-sm font-medium text-white hover:bg-orange-700"
+                    >
+                        <Upload className="h-4 w-4" />
+                        Importar
+                    </button>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".csv,.json"
+                        onChange={handleFileChange}
+                        className="hidden"
+                    />
                 </div>
             </div>
 
