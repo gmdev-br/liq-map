@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 import { Layout } from '@/components/Layout';
 import { Dashboard } from '@/pages/Dashboard';
+import { LiquidationTest } from '@/pages/LiquidationTest';
 import { Prices } from '@/pages/Prices';
 import { Exchanges } from '@/pages/Exchanges';
 import { Alerts } from '@/pages/Alerts';
@@ -24,6 +25,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Dashboard />} />
+            <Route path="liquidation-test" element={<LiquidationTest />} />
             <Route path="prices" element={<Prices />} />
             <Route path="exchanges" element={<Exchanges />} />
             <Route path="alerts" element={<Alerts />} />

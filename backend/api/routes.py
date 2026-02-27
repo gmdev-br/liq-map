@@ -759,8 +759,8 @@ async def compat_liquidation_history(
     - to: Timestamp Unix de fim
     - api_key: API Key da Coinalyze
     """
-    # Constrói chave de cache
-    cache_key = f"compat_liquidation:{symbols}:{interval}:{from_time}:{to_time}"
+    # Constrói chave de cache incluindo filtros para evitar hits incorretos
+    cache_key = f"compat_liquidation:{symbols}:{interval}:{from_time}:{to_time}:{amount_min}:{amount_max}"
     
     # Tenta cache
     cached_data = cache.get(cache_key)
@@ -783,39 +783,58 @@ async def compat_liquidation_history(
         if response.status_code == 200:
             data = response.json()
             
-            # A API Coinalyze pode retornar objeto ou array
-            # Se for objeto, tenta extrair o campo 'data' ou usa os valores
-            if isinstance(data, dict):
-                # Tenta encontrar o array de dados
-                if 'data' in data:
-                    result = data['data']
-                elif 'results' in data:
-                    result = data['results']
+            # A API Coinalyze pode retornar vários formatos. Vamos normalizar para uma lista.
+            history_to_filter = []
+            results = data
+            
+            if isinstance(data, list):
+                if len(data) > 0 and isinstance(data[0], dict) and "history" in data[0]:
+                    # Caso 1: [ {"symbol": "...", "history": [...]}, ... ]
+                    history_to_filter = data[0]["history"]
                 else:
-                    # Se não encontrar campo conhecido, retorna as chaves como lista
-                    result = list(data.values()) if data else []
-                    # Filtra para manter apenas listas
-                    result = [item for item in result if isinstance(item, list)]
-                    result = result[0] if result else []
-            else:
-                result = data
+                    # Caso 2: [...] (Direct list)
+                    history_to_filter = data
+            elif isinstance(data, dict):
+                # Caso 3: {"history": [...]} ou {"data": [...]}
+                history_to_filter = data.get("history", data.get("data", []))
             
-            # Filtrar por amount_min e amount_max após receber os dados da API
+            # Filtrar por amount_min e amount_max
             if amount_min is not None or amount_max is not None:
-                filtered_result = []
-                for item in result:
-                    value_usd = item.get('value_usd', 0)
-                    if amount_min is not None and value_usd < amount_min:
+                filtered_history = []
+                for item in history_to_filter:
+                    # Coinalyze usa 'l' e 's' para volumes, ou 'amount' / 'value_usd'
+                    long_vol = item.get('l', item.get('long_volume', 0))
+                    short_vol = item.get('s', item.get('short_volume', 0))
+                    val = item.get('value_usd', item.get('amount', long_vol + short_vol))
+                    
+                    if amount_min is not None and val < amount_min:
                         continue
-                    if amount_max is not None and value_usd > amount_max:
+                    if amount_max is not None and val > amount_max:
                         continue
-                    filtered_result.append(item)
-                result = filtered_result
-            
+                    filtered_history.append(item)
+                
+                logger.info(f"[COMPAT] Filtro aplicado: {len(history_to_filter)} -> {len(filtered_history)} (min={amount_min}, max={amount_max})")
+                
+                # Re-atribuir os dados filtrados de volta na estrutura original
+                if isinstance(data, list):
+                    if len(data) > 0 and isinstance(data[0], dict) and "history" in data[0]:
+                        data[0]["history"] = filtered_history
+                        results = data
+                    else:
+                        results = filtered_history
+                elif isinstance(data, dict):
+                    if "history" in data:
+                        data["history"] = filtered_history
+                    elif "data" in data:
+                        data["data"] = filtered_history
+                    results = data
+            else:
+                results = data
+                
             # Salva no cache por 5 minutos
-            cache.set(cache_key, result, ttl=300)
+            cache.set(cache_key, results, ttl=300)
             
-            return result
+            return results
         else:
             return {
                 "error": f"Coinalyze API returned {response.status_code}",
