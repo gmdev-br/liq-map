@@ -18,6 +18,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.auth import get_current_api_key
 from backend.cache import cache, cached
+from backend.api.schemas import PaginatedResponse
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ async def get_liquidation_history(
     """
     # Valor padrão se symbols não for fornecido
     if not symbols:
-        symbols = "BTC"
+        symbols = "BTCUSDT_PERP.A"
 
     # Valores padrão: últimos 30 dias se não fornecidos
     if from_time is None:
@@ -172,7 +173,8 @@ async def get_liquidation_history(
     # Tenta cache
     cached_data = cache.get(cache_key)
     if cached_data:
-        return cached_data
+        # Retorna do cache como objeto paginado
+        return PaginatedResponse(**cached_data)
     
     # Chama API Coinalyze
     coinalyze_url = "https://api.coinalyze.net/v1/liquidation-history"
@@ -199,55 +201,74 @@ async def get_liquidation_history(
         if response.status_code == 200:
             data = response.json()
             
-            # Transforma os dados para o formato esperado pelo frontend
-            # API Coinalyze retorna: time, value_usd, exchange, l (longs), s (shorts), price
-            # Frontend espera: timestamp, amount, exchange, side, price
+            # Coinalyze pode retornar:
+            # 1. [ {"symbol": "...", "history": [...]}, ... ]
+            # 2. {"history": [...]} or {"data": [...]}
+            # 3. [...]
+            liquidation_list = []
+            if isinstance(data, list):
+                if len(data) > 0 and isinstance(data[0], dict) and "history" in data[0]:
+                    liquidation_list = data[0]["history"]
+                else:
+                    liquidation_list = data
+            elif isinstance(data, dict):
+                liquidation_list = data.get("history", data.get("data", []))
+            
             transformed_data = []
-            for item in data:
-                # Determina o lado predominante (long ou short)
-                long_liq = item.get('l', 0)
-                short_liq = item.get('s', 0)
+            for item in liquidation_list:
+                # Coinalyze usa 'l' para longs, 's' para shorts e 't' ou 'time' para timestamp
+                long_liq = item.get('l', item.get('long_volume', 0))
+                short_liq = item.get('s', item.get('short_volume', 0))
                 side = "long" if long_liq > short_liq else "short"
                 
+                raw_time = item.get("t", item.get("time", item.get("timestamp", 0)))
+                # Garantimos que seja seconds (timestamps em segundos são ~1.7e9, em milissegundos são ~1.7e12)
+                timestamp = raw_time if raw_time < 10000000000 else raw_time // 1000
+                
                 transformed_data.append({
-                    "id": str(item.get("time", "")),  # Usa time como id
-                    "timestamp": item.get("time", 0),
-                    "amount": item.get("value_usd", 0),
+                    "id": str(raw_time),
+                    "timestamp": timestamp,
+                    "amount": item.get("value_usd", long_liq + short_liq),
                     "exchange": item.get("exchange", "unknown"),
                     "side": side,
                     "price": item.get("price", 0),
-                    "symbol": item.get("symbol", ""),
+                    "symbol": symbols.split(',')[0] if symbols else "BTC",
                     "long_liquidation": long_liq,
                     "short_liquidation": short_liq
                 })
             
-            # Usa os dados transformados para filtrar por amount_min e amount_max
+            # Filtro por amount_min e amount_max
             if amount_min is not None or amount_max is not None:
-                filtered_data = []
-                for item in transformed_data:
-                    amount = item.get('amount', 0)
-                    if amount_min is not None and amount < amount_min:
-                        continue
-                    if amount_max is not None and amount > amount_max:
-                        continue
-                    filtered_data.append(item)
-                transformed_data = filtered_data
+                transformed_data = [
+                    item for item in transformed_data 
+                    if (amount_min is None or item["amount"] >= amount_min) and 
+                       (amount_max is None or item["amount"] <= amount_max)
+                ]
             
             # Salva no cache por 5 minutos
-            cache.set(cache_key, transformed_data, ttl=300)
-            
-            # Opcional: salva no banco de dados
-            # bulk_create_liquidations(db, data)
-            
-            return transformed_data
-        elif response.status_code == 401:
-            # Handle upstream auth failure gracefully
-            logger.warning(f"Upstream API (Coinalyze) returned 401 Unauthorized for symbols: {symbols}. Returning empty list.")
-            return []
+            cached_paginated = PaginatedResponse(
+                data=transformed_data,
+                total=len(transformed_data),
+                page=1,
+                page_size=20
+            )
+            cache.set(cache_key, cached_paginated.model_dump(), ttl=300)
+            return cached_paginated
+
+        elif response.status_code in [401, 403]:
+            # Erro de autorização na API externa (Coinalyze)
+            logger.error(f"[LIQUIDATIONS] Erro de Autenticação na Coinalyze (HTTP {response.status_code}). Verifique a API Key: {api_key_display}")
+            return PaginatedResponse(
+                data=[],
+                total=0,
+                page=1,
+                page_size=20
+            )
         else:
+            logger.error(f"[LIQUIDATIONS] Erro inesperado da API Coinalyze: HTTP {response.status_code} - {response.text}")
             raise HTTPException(
-                status_code=502, # Bad Gateway - upstream error
-                detail=f"Erro da API Coinalyze ({response.status_code}): {response.text}"
+                status_code=502,
+                detail=f"Erro da API Coinalyze ({response.status_code})"
             )
     except requests.RequestException as e:
         raise HTTPException(

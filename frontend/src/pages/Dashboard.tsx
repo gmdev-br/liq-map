@@ -11,7 +11,7 @@ import type { Liquidation } from '@/types';
 export function Dashboard() {
   const [timeRange, setTimeRange] = useState('24h');
   const [liveLiquidations, setLiveLiquidations] = useState<Liquidation[]>([]);
-  
+
   // Filter states
   const [amountMin, setAmountMin] = useState<string>('');
   const [amountMax, setAmountMax] = useState<string>('');
@@ -19,14 +19,14 @@ export function Dashboard() {
     amount_min?: number;
     amount_max?: number;
   }>({});
-  
+
   const { data: liquidationsData, isLoading: liquidationsLoading, refetch: refetchLiquidations } = useLiquidations({
     page: 1,
     page_size: 20,
     amount_min: filters.amount_min,
     amount_max: filters.amount_max,
   });
-  
+
   const { data: stats, isLoading: statsLoading } = useLiquidationStats();
 
   // WebSocket for real-time data
@@ -166,7 +166,7 @@ export function Dashboard() {
                       </td>
                     </tr>
                   ))
-                ) : (
+                ) : allLiquidations.length > 0 ? (
                   allLiquidations.slice(0, 10).map((liquidation) => (
                     <tr
                       key={liquidation.id}
@@ -178,11 +178,10 @@ export function Dashboard() {
                       <td className="px-6 py-4 font-medium">{liquidation.symbol}</td>
                       <td className="px-6 py-4">
                         <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                            liquidation.side === 'long'
+                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${liquidation.side === 'long'
                               ? 'bg-red-500/10 text-red-500'
                               : 'bg-green-500/10 text-green-500'
-                          }`}
+                            }`}
                         >
                           {liquidation.side.toUpperCase()}
                         </span>
@@ -196,6 +195,12 @@ export function Dashboard() {
                       </td>
                     </tr>
                   ))
+                ) : (
+                  <tr className="border-b border-border">
+                    <td colSpan={6} className="px-6 py-8 text-center text-sm text-muted-foreground">
+                      Nenhuma liquidação encontrada. Verifique sua chave de API nas configurações.
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>

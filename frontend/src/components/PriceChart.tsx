@@ -14,12 +14,7 @@ import {
 } from 'recharts';
 import type { Liquidation, Price } from '@/types';
 
-// Gerar ticks de 200 em 200 para a escala de preços de 50000 a 100000
-const priceTicks: number[] = [];
-for (let i = 50000; i <= 100000; i += 200) {
-  priceTicks.push(i);
-}
-
+// PriceChart component props
 interface PriceChartProps {
   data: Price[] | Liquidation[];
   type: 'line' | 'bar' | 'area';
@@ -39,10 +34,31 @@ export function PriceChart({
   showGrid = true,
   height = 300,
 }: PriceChartProps) {
-  const formattedData = data.map((item) => ({
-    ...item,
-    [xAxisKey]: new Date(item[xAxisKey as keyof typeof item] as string).toLocaleDateString(),
-  }));
+  const formattedData = data.map((item) => {
+    const rawValue = item[xAxisKey as keyof typeof item];
+    let date: Date;
+
+    if (typeof rawValue === 'number') {
+      // Se for número (timestamp Unix), assume que está em segundos se for < 10^12
+      // (timestamps em segundos são ~1.7e9, em milissegundos são ~1.7e12)
+      date = new Date(rawValue < 10000000000 ? rawValue * 1000 : rawValue);
+    } else if (typeof rawValue === 'string') {
+      // Se for string, tenta criar a data diretamente
+      date = new Date(rawValue);
+      // Se a data for inválida e a string for um número, tenta converter
+      if (isNaN(date.getTime()) && !isNaN(Number(rawValue))) {
+        const numValue = Number(rawValue);
+        date = new Date(numValue < 10000000000 ? numValue * 1000 : numValue);
+      }
+    } else {
+      date = new Date();
+    }
+
+    return {
+      ...item,
+      [xAxisKey]: date.toLocaleDateString(),
+    };
+  });
 
   const renderChart = () => {
     switch (type) {
@@ -51,10 +67,9 @@ export function PriceChart({
           <BarChart data={formattedData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />}
             <XAxis dataKey={xAxisKey} className="text-xs" />
-            <YAxis 
-              className="text-xs" 
+            <YAxis
+              className="text-xs"
               domain={['auto', 'auto']}
-              ticks={priceTicks}
             />
             <Tooltip
               contentStyle={{
@@ -71,10 +86,9 @@ export function PriceChart({
           <AreaChart data={formattedData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />}
             <XAxis dataKey={xAxisKey} className="text-xs" />
-            <YAxis 
-              className="text-xs" 
+            <YAxis
+              className="text-xs"
               domain={['auto', 'auto']}
-              ticks={priceTicks}
             />
             <Tooltip
               contentStyle={{
@@ -97,10 +111,9 @@ export function PriceChart({
           <LineChart data={formattedData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />}
             <XAxis dataKey={xAxisKey} className="text-xs" />
-            <YAxis 
-              className="text-xs" 
+            <YAxis
+              className="text-xs"
               domain={['auto', 'auto']}
-              ticks={priceTicks}
             />
             <Tooltip
               contentStyle={{
@@ -120,6 +133,14 @@ export function PriceChart({
         );
     }
   };
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex w-full items-center justify-center rounded-lg border border-dashed border-muted-foreground/20 bg-muted/5 text-sm text-muted-foreground" style={{ height }}>
+        <p>Sem dados disponíveis para este período</p>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full" style={{ height }}>
