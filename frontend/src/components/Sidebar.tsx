@@ -11,6 +11,9 @@ import {
   X,
   Activity,
   FlaskConical,
+  ChevronLeft,
+  ChevronRight,
+  Menu,
 } from 'lucide-react';
 
 const navItems = [
@@ -38,9 +41,9 @@ export function Sidebar() {
       {/* Sidebar */}
       <aside
         className={clsx(
-          'fixed top-16 left-0 z-30 h-[calc(100vh-4rem)] w-64 border-r border-border bg-card transition-transform duration-300 ease-in-out',
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full',
-          'md:translate-x-0'
+          'fixed top-16 left-0 z-30 h-[calc(100vh-4rem)] border-r border-border bg-card transition-all duration-300 ease-in-out',
+          sidebarOpen ? 'w-64' : 'w-16',
+          !sidebarOpen && '-translate-x-full md:translate-x-0'
         )}
       >
         <div className="flex h-16 items-center justify-between border-b border-border px-4">
@@ -48,13 +51,13 @@ export function Sidebar() {
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
               <TrendingUp className="h-5 w-5 text-primary-foreground" />
             </div>
-            <span className="text-lg font-bold">Coinglass</span>
+            <span className={clsx('text-lg font-bold transition-all duration-300', sidebarOpen ? 'opacity-100' : 'opacity-0 hidden')}>Coinglass</span>
           </div>
           <button
-            onClick={() => setSidebarOpen(false)}
-            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground md:hidden"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
-            <X className="h-5 w-5" />
+            {sidebarOpen ? <ChevronLeft className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
           </button>
         </div>
 
@@ -72,19 +75,28 @@ export function Sidebar() {
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                 )
               }
+              title={!sidebarOpen ? item.label : undefined}
             >
-              <item.icon className="h-5 w-5" />
-              {item.label}
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              <span className={clsx('transition-all duration-300', sidebarOpen ? 'opacity-100' : 'opacity-0 hidden')}>{item.label}</span>
             </NavLink>
           ))}
         </nav>
 
         <div className="absolute bottom-0 left-0 right-0 border-t border-border p-4">
-          <div className="rounded-lg bg-muted p-3">
-            <p className="text-xs text-muted-foreground">
-              Crypto Analytics
-            </p>
-            <p className="text-xs font-medium">v1.0.0</p>
+          <div className={clsx('rounded-lg bg-muted p-3 transition-all duration-300', !sidebarOpen && 'p-1')}>
+            {sidebarOpen ? (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  Crypto Analytics
+                </p>
+                <p className="text-xs font-medium">v1.0.0</p>
+              </>
+            ) : (
+              <div className="flex h-8 w-8 items-center justify-center">
+                <Activity className="h-5 w-5 text-muted-foreground" />
+              </div>
+            )}
           </div>
         </div>
       </aside>

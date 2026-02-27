@@ -10,7 +10,7 @@ export function Layout() {
   return (
     <div className="min-h-screen bg-background">
       <Sidebar />
-      <div className="md:ml-64">
+      <div className={clsx('transition-all duration-300 ease-in-out', sidebarOpen ? 'md:ml-64' : 'md:ml-16')}>
         <Header />
         <main className="p-4 md:p-6">
           <Outlet />
