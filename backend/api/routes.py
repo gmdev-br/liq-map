@@ -1,0 +1,651 @@
+"""
+Rotas da API Principal
+Endpoints para liquidações, preços, exchanges e símbolos.
+"""
+
+import requests
+from datetime import datetime, timedelta
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+
+from backend.config import settings
+from backend.database import get_db
+from backend.auth import get_current_api_key
+from backend.cache import cache, cached
+
+# Router
+router = APIRouter(prefix="/api/v1", tags=["API"])
+
+
+# ==================== MODELS ====================
+
+class LiquidationResponse(BaseModel):
+    """Modelo de resposta para liquidação"""
+    liquidation_id: str
+    exchange: str
+    symbol: str
+    pair: str
+    price: float
+    quantity: float
+    value_usd: Optional[float]
+    side: Optional[str]
+    timestamp: str
+
+
+class PriceResponse(BaseModel):
+    """Modelo de resposta para preço"""
+    symbol: str
+    exchange: str
+    price: float
+    volume: Optional[float]
+    timestamp: str
+
+
+class ExchangeResponse(BaseModel):
+    """Modelo de resposta para exchange"""
+    id: str
+    name: str
+    supported_symbols: List[str]
+
+
+class SymbolResponse(BaseModel):
+    """Modelo de resposta para símbolo"""
+    symbol: str
+    name: str
+    exchanges: List[str]
+
+
+# ==================== LIQUIDATIONS ====================
+
+@router.get("/liquidations")
+async def get_liquidation_history(
+    symbols: str = Query(..., description="Símbolos separados por vírgula (ex: BTC,ETH)"),
+    interval: str = Query("daily", description="Intervalo: daily, hourly"),
+    from_time: Optional[int] = Query(None, description="Timestamp Unix de início"),
+    to_time: Optional[int] = Query(None, description="Timestamp Unix de fim"),
+    amount_min: Optional[float] = Query(None, description="Valor mínimo de liquidação em USD"),
+    amount_max: Optional[float] = Query(None, description="Valor máximo de liquidação em USD"),
+    api_key: str = Query("FREE", description="API Key Coinalyze"),
+    db: Session = Depends(get_db),
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Obtém histórico de liquidações.
+    
+    Migração do endpoint Flask /api/liquidation-history
+    """
+    # Constrói chave de cache
+    cache_key = f"liquidation:{symbols}:{interval}:{from_time}:{to_time}"
+    
+    # Tenta cache
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return cached_data
+    
+    # Chama API Coinalyze
+    coinalyze_url = "https://api.coinalyze.net/v1/liquidation-history"
+    params = {
+        "symbols": symbols,
+        "interval": interval,
+        "api_key": api_key
+    }
+    
+    if from_time:
+        params["from"] = from_time
+    if to_time:
+        params["to"] = to_time
+    
+    try:
+        response = requests.get(coinalyze_url, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Filtrar por amount_min e amount_max após receber os dados da API
+            if amount_min is not None or amount_max is not None:
+                filtered_data = []
+                for item in data:
+                    value_usd = item.get('value_usd', 0)
+                    if amount_min is not None and value_usd < amount_min:
+                        continue
+                    if amount_max is not None and value_usd > amount_max:
+                        continue
+                    filtered_data.append(item)
+                data = filtered_data
+            
+            # Salva no cache por 5 minutos
+            cache.set(cache_key, data, ttl=300)
+            
+            # Opcional: salva no banco de dados
+            # bulk_create_liquidations(db, data)
+            
+            return data
+        else:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Erro da API Coinalyze: {response.text}"
+            )
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao conectar com Coinalyze: {str(e)}"
+        )
+
+
+@router.get("/liquidations/stats")
+async def get_liquidation_stats(
+    symbol: Optional[str] = Query(None, description="Símbolo específico"),
+    exchange: Optional[str] = Query(None, description="Exchange específica"),
+    days: int = Query(30, description="Número de dias para buscar"),
+    db: Session = Depends(get_db),
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Obtém estatísticas de liquidações do banco de dados local.
+    """
+    from backend.database import get_liquidation_stats as db_stats
+    
+    start_time = datetime.utcnow() - timedelta(days=days)
+    end_time = datetime.utcnow()
+    
+    stats = db_stats(
+        db=db,
+        symbol=symbol,
+        exchange=exchange,
+        start_time=start_time,
+        end_time=end_time
+    )
+    
+    return {
+        "period": f"{days} days",
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat(),
+        "stats": stats
+    }
+
+
+@router.get("/analytics/liquidations")
+async def get_liquidation_analytics(
+    symbol: Optional[str] = Query(None, description="Símbolo específico"),
+    exchange: Optional[str] = Query(None, description="Exchange específica"),
+    days: int = Query(30, description="Número de dias para buscar"),
+    db: Session = Depends(get_db),
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Obtém análises de liquidações com estatísticas consolidadas.
+    Retorna dados no formato esperado pelo frontend.
+    """
+    from backend.analytics.service import get_liquidation_analytics as analytics
+    
+    result = analytics(
+        db=db,
+        symbol=symbol,
+        exchange=exchange,
+        days=days
+    )
+    
+    # Mapeia para o formato esperado pelo frontend
+    return {
+        "total_liquidations": result.get("total_count", 0),
+        "total_volume": result.get("total_volume", 0),
+        "largest_liquidation": result.get("max_volume", 0),
+        "avg_liquidation": result.get("avg_volume", 0),
+        "by_exchange": result.get("by_exchange", {}),
+        "by_symbol": result.get("by_symbol", {}),
+        "by_side": {
+            "long": result.get("long_count", 0),
+            "short": result.get("short_count", 0)
+        }
+    }
+
+
+# ==================== PRICES ====================
+
+@router.get("/prices")
+async def get_price_history(
+    symbols: str = Query(..., description="Símbolos (ex: BTCUSDT_PERP.A)"),
+    from_time: int = Query(..., description="Timestamp Unix de início"),
+    to_time: int = Query(..., description="Timestamp Unix de fim"),
+    db: Session = Depends(get_db),
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Obtém histórico de preços.
+    
+    Tenta: Binance -> GeckoTerminal -> CoinGecko
+    Migração do endpoint Flask /api/price-history
+    """
+    # Constrói chave de cache
+    cache_key = f"price:{symbols}:{from_time}:{to_time}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return cached_data
+    
+    # Converte símbolo
+    symbol_map = {
+        "BTCUSDT_PERP.A": "BTCUSDT",
+        "ETHUSDT_PERP.A": "ETHUSDT",
+        "SOLUSDT_PERP.A": "SOLUSDT",
+        "XRPUSDT_PERP.A": "XRPUSDT",
+        "ADAUSDT_PERP.A": "ADAUSDT"
+    }
+    
+    binance_symbol = symbol_map.get(symbols, "BTCUSDT")
+    days_range = (to_time - from_time) / (24 * 60 * 60)
+    
+    # Tenta Binance
+    try:
+        binance_url = "https://api.binance.com/api/v3/klines"
+        params = {
+            "symbol": binance_symbol,
+            "interval": "1d",
+            "startTime": from_time * 1000,
+            "endTime": to_time * 1000,
+            "limit": 1000
+        }
+        
+        response = requests.get(binance_url, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if isinstance(data, list) and len(data) > 0:
+                formatted_data = []
+                for item in data:
+                    formatted_data.append({
+                        "t": item[0] // 1000,
+                        "c": item[4]
+                    })
+                
+                cache.set(cache_key, formatted_data, ttl=300)
+                return formatted_data
+    except Exception:
+        pass
+    
+    # Fallback CoinGecko
+    coin_map = {
+        "BTCUSDT_PERP.A": "bitcoin",
+        "ETHUSDT_PERP.A": "ethereum",
+        "SOLUSDT_PERP.A": "solana"
+    }
+    
+    coin_id = coin_map.get(symbols, "bitcoin")
+    coingecko_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
+    
+    try:
+        params = {
+            "vs_currency": "usd",
+            "from": from_time,
+            "to": to_time
+        }
+        
+        response = requests.get(coingecko_url, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if "prices" in data:
+                formatted_data = []
+                for price_point in data["prices"]:
+                    formatted_data.append({
+                        "t": price_point[0] // 1000,
+                        "c": price_point[1]
+                    })
+                
+                cache.set(cache_key, formatted_data, ttl=300)
+                return formatted_data
+    except Exception:
+        pass
+    
+    return []
+
+
+@router.get("/prices/latest")
+async def get_latest_price(
+    symbol: str = Query(..., description="Símbolo (ex: BTC)"),
+    exchange: Optional[str] = Query(None, description="Exchange específica"),
+    db: Session = Depends(get_db),
+    current_key: str = Depends(get_current_api_key)
+):
+    """Obtém o preço mais recente de um símbolo"""
+    from backend.database import get_latest_price as db_latest_price
+    
+    price = db_latest_price(db, symbol, exchange)
+    
+    if price:
+        return price.to_dict()
+    
+    # Tenta obter da Binance se não houver no DB
+    try:
+        binance_symbol = f"{symbol}USDT"
+        url = "https://api.binance.com/api/v3/ticker/price"
+        params = {"symbol": binance_symbol}
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Salva no banco
+            from backend.database import create_price
+            price_record = create_price(
+                db=db,
+                symbol=symbol,
+                exchange="binance",
+                price=float(data["price"])
+            )
+            
+            return {
+                "symbol": symbol,
+                "exchange": "binance",
+                "price": float(data["price"]),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    except Exception:
+        pass
+    
+    raise HTTPException(status_code=404, detail="Preço não encontrado")
+
+
+# ==================== EXCHANGES ====================
+
+@router.get("/exchanges")
+async def get_exchanges(
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Lista todas as exchanges suportadas.
+    """
+    return {
+        "exchanges": [
+            {
+                "id": "binance",
+                "name": "Binance",
+                "url": "https://www.binance.com"
+            },
+            {
+                "id": "bybit",
+                "name": "Bybit",
+                "url": "https://www.bybit.com"
+            },
+            {
+                "id": "okx",
+                "name": "OKX",
+                "url": "https://www.okx.com"
+            },
+            {
+                "id": "huobi",
+                "name": "Huobi",
+                "url": "https://www.huobi.com"
+            },
+            {
+                "id": "gate",
+                "name": "Gate.io",
+                "url": "https://www.gate.io"
+            },
+            {
+                "id": "kucoin",
+                "name": "KuCoin",
+                "url": "https://www.kucoin.com"
+            }
+        ]
+    }
+
+
+# ==================== SYMBOLS ====================
+
+@router.get("/symbols")
+async def get_symbols(
+    exchange: Optional[str] = Query(None, description="Filtrar por exchange"),
+    current_key: str = Depends(get_current_api_key)
+):
+    """
+    Lista todos os símbolos disponíveis.
+    """
+    symbols = [
+        {"symbol": "BTC", "name": "Bitcoin", "exchanges": ["binance", "bybit", "okx"]},
+        {"symbol": "ETH", "name": "Ethereum", "exchanges": ["binance", "bybit", "okx"]},
+        {"symbol": "BNB", "name": "BNB", "exchanges": ["binance"]},
+        {"symbol": "SOL", "name": "Solana", "exchanges": ["binance", "bybit", "okx"]},
+        {"symbol": "XRP", "name": "XRP", "exchanges": ["binance", "bybit", "okx"]},
+        {"symbol": "ADA", "name": "Cardano", "exchanges": ["binance", "bybit"]},
+        {"symbol": "DOGE", "name": "Dogecoin", "exchanges": ["binance", "bybit"]},
+        {"symbol": "AVAX", "name": "Avalanche", "exchanges": ["binance", "bybit"]},
+        {"symbol": "DOT", "name": "Polkadot", "exchanges": ["binance", "bybit"]},
+        {"symbol": "MATIC", "name": "Polygon", "exchanges": ["binance", "bybit"]},
+        {"symbol": "LINK", "name": "Chainlink", "exchanges": ["binance", "bybit"]},
+        {"symbol": "UNI", "name": "Uniswap", "exchanges": ["binance"]},
+        {"symbol": "ATOM", "name": "Cosmos", "exchanges": ["binance"]},
+        {"symbol": "LTC", "name": "Litecoin", "exchanges": ["binance", "bybit"]}
+    ]
+    
+    if exchange:
+        symbols = [s for s in symbols if exchange.lower() in s["exchanges"]]
+    
+    return {"symbols": symbols}
+
+
+# ==================== HEALTH CHECK ====================
+
+@router.get("/health")
+async def health_check():
+    """Endpoint de verificação de saúde"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": settings.APP_VERSION
+    }
+
+
+# ==================== ROTA DE COMPATIBILIDADE - FLASK (PORTA 5000) ====================
+# Rotas para compatibilidade com arquivos HTML originais que tentam conectar
+# no servidor Flask antigo (127.0.0.1:5000)
+
+# Router sem autenticação para rotas de compatibilidade
+compat_router = APIRouter(prefix="", tags=["Compatibilidade"])
+
+
+@compat_router.get("/api/liquidation-history")
+async def compat_liquidation_history(
+    symbols: str = Query(..., description="Símbolos separados por vírgula"),
+    interval: str = Query("daily", description="Intervalo: daily, hourly"),
+    from_time: int = Query(..., alias="from", description="Timestamp Unix de início"),
+    to_time: int = Query(..., alias="to", description="Timestamp Unix de fim"),
+    amount_min: Optional[float] = Query(None, description="Valor mínimo de liquidação em USD"),
+    amount_max: Optional[float] = Query(None, description="Valor máximo de liquidação em USD"),
+    api_key: str = Query("FREE", description="API Key Coinalyze")
+):
+    """
+    Rota de compatibilidade:GET /api/liquidation-history
+    
+    Replica o endpoint original do Flask proxy_server.py para que os arquivos
+    HTML originais continuem funcionando com o novo backend FastAPI.
+    
+    Parâmetros:
+    - symbols: Símbolos separados por vírgula (ex: BTC,ETH)
+    - interval: Intervalo (daily, hourly)
+    - from: Timestamp Unix de início
+    - to: Timestamp Unix de fim
+    - api_key: API Key da Coinalyze
+    """
+    # Constrói chave de cache
+    cache_key = f"compat_liquidation:{symbols}:{interval}:{from_time}:{to_time}"
+    
+    # Tenta cache
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return cached_data
+    
+    # Chama API Coinalyze
+    coinalyze_url = "https://api.coinalyze.net/v1/liquidation-history"
+    params = {
+        "symbols": symbols,
+        "interval": interval,
+        "api_key": api_key,
+        "from": from_time,
+        "to": to_time
+    }
+    
+    try:
+        response = requests.get(coinalyze_url, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # A API Coinalyze pode retornar objeto ou array
+            # Se for objeto, tenta extrair o campo 'data' ou usa os valores
+            if isinstance(data, dict):
+                # Tenta encontrar o array de dados
+                if 'data' in data:
+                    result = data['data']
+                elif 'results' in data:
+                    result = data['results']
+                else:
+                    # Se não encontrar campo conhecido, retorna as chaves como lista
+                    result = list(data.values()) if data else []
+                    # Filtra para manter apenas listas
+                    result = [item for item in result if isinstance(item, list)]
+                    result = result[0] if result else []
+            else:
+                result = data
+            
+            # Filtrar por amount_min e amount_max após receber os dados da API
+            if amount_min is not None or amount_max is not None:
+                filtered_result = []
+                for item in result:
+                    value_usd = item.get('value_usd', 0)
+                    if amount_min is not None and value_usd < amount_min:
+                        continue
+                    if amount_max is not None and value_usd > amount_max:
+                        continue
+                    filtered_result.append(item)
+                result = filtered_result
+            
+            # Salva no cache por 5 minutos
+            cache.set(cache_key, result, ttl=300)
+            
+            return result
+        else:
+            return {
+                "error": f"Coinalyze API returned {response.status_code}",
+                "message": response.text
+            }
+    except Exception as e:
+        return {
+            "error": "Proxy error",
+            "message": str(e)
+        }, 500
+
+
+@compat_router.get("/api/price-history")
+async def compat_price_history(
+    symbols: str = Query(..., description="Símbolo (ex: BTCUSDT_PERP.A)"),
+    interval: str = Query("1d", description="Intervalo"),
+    from_time: int = Query(..., alias="from", description="Timestamp Unix de início"),
+    to_time: int = Query(..., alias="to", description="Timestamp Unix de fim"),
+    api_key: Optional[str] = Query(None, description="API Key (não usado, para compatibilidade)")
+):
+    """
+    Rota de compatibilidade: GET /api/price-history
+    
+    Replica o endpoint original do Flask proxy_server.py para que os arquivos
+    HTML originais continuem funcionando com o novo backend FastAPI.
+    
+    Parâmetros:
+    - symbol: Símbolo (ex: BTCUSDT_PERP.A)
+    - interval: Intervalo (não usado, mantido para compatibilidade)
+    - from: Timestamp Unix de início
+    - to: Timestamp Unix de fim
+    
+    Tenta: Binance -> GeckoTerminal -> CoinGecko
+    """
+    # Constrói chave de cache
+    cache_key = f"compat_price:{symbols}:{from_time}:{to_time}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return cached_data
+    
+    # Converte símbolo
+    symbol_map = {
+        "BTCUSDT_PERP.A": "BTCUSDT",
+        "ETHUSDT_PERP.A": "ETHUSDT",
+        "SOLUSDT_PERP.A": "SOLUSDT",
+        "XRPUSDT_PERP.A": "XRPUSDT",
+        "ADAUSDT_PERP.A": "ADAUSDT"
+    }
+    
+    binance_symbol = symbol_map.get(symbols, "BTCUSDT")
+    days_range = (to_time - from_time) / (24 * 60 * 60)
+    
+    # Tenta Binance
+    try:
+        binance_url = "https://api.binance.com/api/v3/klines"
+        params = {
+            "symbol": binance_symbol,
+            "interval": "1d",
+            "startTime": from_time * 1000,
+            "endTime": to_time * 1000,
+            "limit": 1000
+        }
+        
+        response = requests.get(binance_url, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if isinstance(data, list) and len(data) > 0:
+                formatted_data = []
+                for item in data:
+                    formatted_data.append({
+                        "t": item[0] // 1000,
+                        "c": item[4]
+                    })
+                
+                cache.set(cache_key, formatted_data, ttl=300)
+                return formatted_data
+    except Exception:
+        pass
+    
+    # Fallback CoinGecko
+    coin_map = {
+        "BTCUSDT_PERP.A": "bitcoin",
+        "ETHUSDT_PERP.A": "ethereum",
+        "SOLUSDT_PERP.A": "solana",
+        "XRPUSDT_PERP.A": "ripple",
+        "ADAUSDT_PERP.A": "cardano"
+    }
+    
+    coin_id = coin_map.get(symbols, "bitcoin")
+    coingecko_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
+    
+    try:
+        params = {
+            "vs_currency": "usd",
+            "from": from_time,
+            "to": to_time
+        }
+        
+        response = requests.get(coingecko_url, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if "prices" in data:
+                formatted_data = []
+                for price_point in data["prices"]:
+                    formatted_data.append({
+                        "t": price_point[0] // 1000,
+                        "c": price_point[1]
+                    })
+                
+                cache.set(cache_key, formatted_data, ttl=300)
+                return formatted_data
+    except Exception:
+        pass
+    
+    return []

@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoinAPI Liquidation Data Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 30px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+
+        .status.loading {
+            background: #fff3cd;
+            color: #856404;
+            display: block;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            display: block;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+
+        .data-display {
+            margin-top: 30px;
+            display: none;
+        }
+
+        .data-display.active {
+            display: block;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+        }
+
+        tr:hover {
+            background: #f5f5f5;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .info-box h3 {
+            color: #1976D2;
+            margin-bottom: 10px;
+        }
+
+        .info-box p {
+            color: #555;
+            line-height: 1.6;
+        }
+
+        .info-box code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CoinAPI Liquidation Data Test</h1>
+
+        <div class="info-box">
+            <h3>CoinAPI Liquidation Data via Metrics v1</h3>
+            <p>
+                CoinAPI provides liquidation data through <strong>Market Data Metrics v1</strong> API.
+            </p>
+            <p>
+                Available metrics include:
+            </p>
+            <ul style="margin-left: 20px; color: #555;">
+                <li>LIQUIDATION_PRICE</li>
+                <li>LIQUIDATION_QUANTITY</li>
+                <li>LIQUIDATION_SIDE</li>
+                <li>LIQUIDATION_TIME</li>
+                <li>LIQUIDATION_SYMBOL</li>
+            </ul>
+            <p style="margin-top: 10px; color: #555;">
+                Supported exchanges: Deribit, BitMEX, Binance Futures, Kraken Futures, Bitfinex
+            </p>
+        </div>
+
+        <div class="form-group">
+            <label for="apiKey">CoinAPI Key:</label>
+            <input type="password" id="apiKey" placeholder="Enter your CoinAPI key">
+        </div>
+
+        <div class="form-group">
+            <label for="exchange">Exchange:</label>
+            <select id="exchange">
+                <option value="BINANCE_FUTURES">Binance Futures</option>
+                <option value="DERIBIT">Deribit</option>
+                <option value="BITMEX">BitMEX</option>
+                <option value="KRAKEN_FUTURES">Kraken Futures</option>
+                <option value="BITFINEX">Bitfinex</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="symbol">Symbol:</label>
+            <select id="symbol">
+                <option value="BTC">BTC (Bitcoin)</option>
+                <option value="ETH">ETH (Ethereum)</option>
+                <option value="SOL">SOL (Solana)</option>
+                <option value="XRP">XRP (Ripple)</option>
+                <option value="ADA">ADA (Cardano)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="timePeriod">Time Period:</label>
+            <select id="timePeriod">
+                <option value="1">Last 1 Month</option>
+                <option value="3">Last 3 Months</option>
+                <option value="6">Last 6 Months</option>
+                <option value="12" selected>Last 12 Months</option>
+            </select>
+        </div>
+
+        <button id="fetchBtn" onclick="fetchLiquidationData()">Fetch Liquidation Data</button>
+
+        <div id="status" class="status"></div>
+
+        <div id="dataDisplay" class="data-display">
+            <h2>Liquidation Data</h2>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalLiquidations">0</div>
+                    <div class="stat-label">Total Liquidations</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avgVolume">$0</div>
+                    <div class="stat-label">Avg Volume</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="maxVolume">$0</div>
+                    <div class="stat-label">Max Volume</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="dataPoints">0</div>
+                    <div class="stat-label">Data Points</div>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Volume (USD)</th>
+                        <th>Price</th>
+                        <th>Side</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTable">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        function formatDate(date) {
+            return date.toISOString().split('T')[0];
+        }
+
+        function calculateStartDate(months) {
+            const endDate = new Date();
+            const startDate = new Date();
+            startDate.setMonth(startDate.getMonth() - months);
+            return {
+                start: formatDate(startDate),
+                end: formatDate(endDate)
+            };
+        }
+
+        function formatCurrency(value) {
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(value);
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.className = `status ${type}`;
+            status.textContent = message;
+        }
+
+        function updateStats(data) {
+            const totalLiquidations = data.length;
+            const volumes = data.map(d => d.volume || 0);
+            const avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+            const maxVolume = Math.max(...volumes);
+
+            document.getElementById('totalLiquidations').textContent = totalLiquidations.toLocaleString();
+            document.getElementById('avgVolume').textContent = formatCurrency(avgVolume);
+            document.getElementById('maxVolume').textContent = formatCurrency(maxVolume);
+            document.getElementById('dataPoints').textContent = totalLiquidations.toLocaleString();
+        }
+
+        function populateTable(data) {
+            const tbody = document.getElementById('dataTable');
+            tbody.innerHTML = '';
+
+            data.forEach(item => {
+                const row = document.createElement('tr');
+                
+                // Determine data type and format accordingly
+                let date, volume, price, side;
+                
+                if (item.time_period_start || item.time_start) {
+                    date = new Date(item.time_period_start || item.time_start).toLocaleDateString();
+                } else if (item.time) {
+                    date = new Date(item.time).toLocaleDateString();
+                } else {
+                    date = 'N/A';
+                }
+                
+                // Handle different data structures
+                if (item.volume_total_quote || item.volume) {
+                    volume = item.volume_total_quote || item.volume;
+                } else if (item.price && item.amount) {
+                    volume = item.price * item.amount;
+                } else {
+                    volume = 0;
+                }
+                
+                price = item.price_close || item.price || 0;
+                side = item.side || item.type || 'N/A';
+                
+                row.innerHTML = `
+                    <td>${date}</td>
+                    <td>${formatCurrency(volume)}</td>
+                    <td>${formatCurrency(price)}</td>
+                    <td>${side}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        async function fetchLiquidationData() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const exchange = document.getElementById('exchange').value;
+            const symbol = document.getElementById('symbol').value;
+            const months = parseInt(document.getElementById('timePeriod').value);
+            const fetchBtn = document.getElementById('fetchBtn');
+            const dataDisplay = document.getElementById('dataDisplay');
+
+            if (!apiKey) {
+                showStatus('Please enter your CoinAPI key', 'error');
+                return;
+            }
+
+            const { start, end } = calculateStartDate(months);
+
+            fetchBtn.disabled = true;
+            showStatus('Fetching liquidation data...', 'loading');
+            dataDisplay.classList.remove('active');
+
+            console.log('=== Starting CoinAPI Liquidation Data Fetch ===');
+                console.log('Exchange:', exchange);
+                console.log('Symbol:', symbol);
+                console.log('Time period:', months, 'months');
+                console.log('Date range:', start, 'to', end);
+                
+                // First, test if API key works by fetching basic OHLCV data
+                console.log('\n=== Testing API Key ===');
+                const testUrl = `https://rest.coinapi.io/v1/ohlcv/BINANCE_SPOT_BTC_USDT/history?period_id=1DAY&time_start=${start}T00:00:00Z&time_end=${end}T23:59:59Z&limit=5`;
+                console.log('Test URL:', testUrl);
+                
+                try {
+                    const testResponse = await fetch(testUrl, {
+                        headers: { 'X-CoinAPI-Key': apiKey }
+                    });
+                    
+                    console.log('Test response status:', testResponse.status);
+                    
+                    if (testResponse.status === 401) {
+                        throw new Error('API key is invalid or expired');
+                    }
+                    
+                    if (testResponse.ok) {
+                        const testData = await testResponse.json();
+                        console.log('✓ API key works! Got', testData.length, 'OHLCV records');
+                        console.log('Sample OHLCV data:', testData[0]);
+                    }
+                } catch (testError) {
+                    console.error('API key test failed:', testError);
+                    throw new Error('API key validation failed. Please check your CoinAPI key.');
+                }
+
+                // CoinAPI Metrics v1 API for liquidation data
+                console.log('\n=== Fetching Liquidation Metrics ===');
+                // Format: /v1/metrics/{exchange_id}/{metric_id}/{symbol}
+                const metrics = [
+                    'LIQUIDATION_PRICE',
+                    'LIQUIDATION_QUANTITY',
+                    'LIQUIDATION_SIDE',
+                    'LIQUIDATION_TIME',
+                    'LIQUIDATION_SYMBOL'
+                ];
+
+                let allData = [];
+                let lastError = null;
+
+                for (const metricId of metrics) {
+                    try {
+                        // Build symbol ID for different exchanges
+                        let symbolId;
+                        if (exchange === 'BINANCE_FUTURES') {
+                            symbolId = `${symbol}USDT`;
+                        } else if (exchange === 'DERIBIT') {
+                            symbolId = `${symbol}-PERP`;
+                        } else if (exchange === 'BITMEX') {
+                            symbolId = `${symbol}USD`;
+                        } else {
+                            symbolId = `${symbol}USDT`;
+                        }
+
+                        const url = `https://rest.coinapi.io/v1/metrics/${exchange}/${metricId}/${symbolId}?time_start=${start}T00:00:00Z&time_end=${end}T23:59:59Z&limit=1000`;
+                        
+                        console.log(`\nFetching ${metricId}...`);
+                        console.log(`URL: ${url}`);
+                        
+                        const response = await fetch(url, {
+                            headers: {
+                                'X-CoinAPI-Key': apiKey
+                            }
+                        });
+
+                        console.log(`Response status: ${response.status}`);
+                        console.log(`Response headers:`, Object.fromEntries(response.headers));
+
+                        if (response.ok) {
+                            const responseData = await response.json();
+                            console.log(`✓ Response OK`);
+                            console.log(`Data structure:`, typeof responseData, Array.isArray(responseData));
+                            console.log(`Full response:`, JSON.stringify(responseData, null, 2));
+                            
+                            if (Array.isArray(responseData) && responseData.length > 0) {
+                                console.log(`✓ Got ${responseData.length} records`);
+                                console.log(`Sample record:`, responseData[0]);
+                                allData = allData.concat(responseData);
+                            } else if (typeof responseData === 'object' && responseData.data) {
+                                console.log(`Response has 'data' property`);
+                                if (Array.isArray(responseData.data) && responseData.data.length > 0) {
+                                    console.log(`✓ Got ${responseData.data.length} records`);
+                                    console.log(`Sample record:`, responseData.data[0]);
+                                    allData = allData.concat(responseData.data);
+                                } else {
+                                    console.log(`Response data is not array:`, responseData.data);
+                                    if (responseData.data && typeof responseData.data === 'object') {
+                                        console.log(`Trying to extract from object:`, responseData.data);
+                                        allData.push(responseData.data);
+                                    }
+                                }
+                            } else {
+                                console.log(`Response is not array or has no data property`);
+                                console.log(`Response keys:`, Object.keys(responseData));
+                                if (typeof responseData === 'object') {
+                                    for (const key of Object.keys(responseData)) {
+                                        if (key.toLowerCase().includes('liquidation') || 
+                                            key.toLowerCase().includes('data') ||
+                                            key.toLowerCase().includes('value')) {
+                                            console.log(`Found potential data in key '${key}':`, responseData[key]);
+                                            if (Array.isArray(responseData[key])) {
+                                                allData = allData.concat(responseData[key]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (response.status === 404) {
+                            console.log(`✗ Metric ${metricId} not available for ${exchange}/${symbolId}`);
+                        } else if (response.status === 401) {
+                            throw new Error('Authentication failed. Check your API key.');
+                        } else if (response.status === 429) {
+                            throw new Error('Rate limit exceeded. Please wait before trying again.');
+                        } else {
+                            const errorText = await response.text();
+                            console.error(`✗ Error: ${errorText}`);
+                            lastError = `API Error ${response.status}: ${errorText}`;
+                        }
+                    } catch (metricError) {
+                        console.error(`✗ Error fetching ${metricId}:`, metricError);
+                        lastError = metricError.message;
+                    }
+                }
+
+                console.log(`\n=== Summary ===`);
+                console.log(`Total data collected: ${allData.length} items`);
+                
+                if (allData.length === 0) {
+                    console.error('No liquidation data found!');
+                    console.error('Possible reasons:');
+                    console.error('1. CoinAPI Metrics v1 may not have liquidation data for this exchange/symbol');
+                    console.error('2. The metrics might not be available in the free tier');
+                    console.error('3. Symbol ID format might be incorrect');
+                    console.error('4. Liquidation metrics might not be available for all exchanges');
+                    throw new Error(lastError || 'No liquidation data found. CoinAPI liquidation metrics may not be available for all exchanges or symbols. Try different exchanges or check CoinAPI documentation.');
+                }
+
+                // Merge data by timestamp
+                const mergedData = mergeDataByTimestamp(allData);
+                
+                updateStats(mergedData);
+                populateTable(mergedData);
+                dataDisplay.classList.add('active');
+                showStatus(`Successfully fetched ${mergedData.length} liquidation records`, 'success');
+
+            } catch (error) {
+                console.error('Full error:', error);
+                console.error('Error type:', error.constructor.name);
+                console.error('Error message:', error.message);
+                console.error('Error stack:', error.stack);
+                
+                let errorMessage = error.message || 'Unknown error occurred';
+                if (error.message === '{}') {
+                    errorMessage = 'API request failed. Please check the console for details.';
+                }
+                
+                showStatus(`Error: ${errorMessage}`, 'error');
+            } finally {
+                fetchBtn.disabled = false;
+            }
+        }
+
+        function mergeDataByTimestamp(data) {
+            // Merge multiple metric data points by timestamp
+            const merged = {};
+            
+            data.forEach(item => {
+                const time = item.time || item.time_period_start || item.timestamp;
+                if (!time) return;
+                
+                if (!merged[time]) {
+                    merged[time] = {
+                        time: time,
+                        price: item.value || item.price || 0,
+                        volume: item.value || item.quantity || 0,
+                        side: item.side || 'N/A'
+                    };
+                } else {
+                    // Update with more complete data
+                    if (item.value) {
+                        merged[time].price = item.value;
+                        merged[time].volume = item.value;
+                    }
+                    if (item.quantity) {
+                        merged[time].volume = item.quantity;
+                    }
+                    if (item.side) {
+                        merged[time].side = item.side;
+                    }
+                }
+            });
+            
+            return Object.values(merged).sort((a, b) => new Date(a.time) - new Date(b.time));
+        }
+    </script>
+</body>
+</html>

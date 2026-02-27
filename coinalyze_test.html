@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coinalyze Liquidation Data Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .info-box {
+            background: #f0f9ff;
+            border-left: 4px solid #0ea5e9;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+
+        .info-box h3 {
+            color: #0369a1;
+            margin-bottom: 8px;
+            font-size: 1rem;
+        }
+
+        .info-box p {
+            color: #0c4a6e;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #1e293b;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .status.loading {
+            background: #fef3c7;
+            color: #92400e;
+            display: block;
+        }
+
+        .status.success {
+            background: #d1fae5;
+            color: #065f46;
+            display: block;
+        }
+
+        .status.error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .progress-container {
+            margin-bottom: 20px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e2e8f0;
+            border-radius: 15px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 5px;
+            font-size: 14px;
+            color: #64748b;
+            font-weight: 500;
+        }
+
+        .data-display {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .data-display.active {
+            display: block;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-card h4 {
+            font-size: 0.9rem;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .stat-card p {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .table-container {
+            overflow-x: auto;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        th {
+            background: #f8fafc;
+            font-weight: 600;
+            color: #1e293b;
+        }
+
+        tr:hover {
+            background: #f8fafc;
+        }
+
+        .long {
+            color: #059669;
+            font-weight: 600;
+        }
+
+        .short {
+            color: #dc2626;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Coinalyze Liquidation Data Test</h1>
+            <p>Fetch historical liquidation data from Coinalyze API</p>
+        </div>
+
+        <div class="card">
+            <div class="info-box">
+                <h3>Coinalyze API - Free Liquidation Data</h3>
+                <p>Coinalyze offers a free API with daily historical liquidation data (1 year+). Get your free API key at <a href="https://coinalyze.net" target="_blank">coinalyze.net</a> after simple email registration.</p>
+                <p><strong>Note:</strong> This page uses a local proxy server to avoid CORS issues. Make sure the proxy server is running on port 8000 before fetching data.</p>
+            </div>
+
+            <div class="form-group">
+                <label for="apiKey">API Key (optional, default: FREE)</label>
+                <input type="password" id="apiKey" placeholder="Enter your Coinalyze API key">
+            </div>
+
+            <div class="form-group">
+                <label for="priceInterval">Price Interval for Aggregation (USD)</label>
+                <input type="number" id="priceInterval" placeholder="e.g., 1000 for $1000 intervals, 0 for no aggregation" min="0" value="0">
+                <small>Set to 0 to show individual data points, or enter a value to aggregate by price ranges</small>
+            </div>
+
+            <div class="form-group">
+                <label for="symbol">Symbol:</label>
+                <select id="symbol">
+                    <option value="BTCUSDT_PERP.A">BTC/USDT Perpetual (Binance)</option>
+                    <option value="ETHUSDT_PERP.A">ETH/USDT Perpetual (Binance)</option>
+                    <option value="SOLUSDT_PERP.A">SOL/USDT Perpetual (Binance)</option>
+                    <option value="XRPUSDT_PERP.A">XRP/USDT Perpetual (Binance)</option>
+                    <option value="ADAUSDT_PERP.A">ADA/USDT Perpetual (Binance)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="timePeriod">Time Period:</label>
+                <select id="timePeriod">
+                    <option value="1">Last 1 Month</option>
+                    <option value="3">Last 3 Months</option>
+                    <option value="6">Last 6 Months</option>
+                    <option value="12" selected>Last 12 Months</option>
+                    <option value="18">Last 18 Months</option>
+                    <option value="24">Last 2 Years</option>
+                    <option value="36">Last 3 Years</option>
+                    <option value="60">Last 5 Years</option>
+                    <option value="120">Last 10 Years</option>
+                    <option value="0">Maximum Available</option>
+                </select>
+            </div>
+
+            <button class="btn" id="fetchBtn" onclick="fetchLiquidationData()">Fetch Liquidation Data</button>
+
+            <div class="status" id="status"></div>
+
+            <div class="data-display" id="dataDisplay">
+                <div class="progress-container" id="progressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">0%</div>
+                </div>
+
+                <div class="stats">
+                    <div class="stat-card">
+                        <h4>Total Records</h4>
+                        <p id="totalRecords">0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Total Volume</h4>
+                        <p id="totalVolume">$0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Average Volume</h4>
+                        <p id="avgVolume">$0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Max Volume</h4>
+                        <p id="maxVolume">$0</p>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <canvas id="liquidationChart" style="max-height: 400px;"></canvas>
+                </div>
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Long Volume</th>
+                                <th>Short Volume</th>
+                                <th>Total Volume</th>
+                                <th>Long/Short Ratio</th>
+                                <th>Price</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dataTable">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Load saved API key on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedApiKey = localStorage.getItem('coinalyze_api_key');
+            if (savedApiKey) {
+                document.getElementById('apiKey').value = savedApiKey;
+            }
+
+            // Add event listener for price interval change
+            const priceIntervalInput = document.getElementById('priceInterval');
+            if (priceIntervalInput) {
+                priceIntervalInput.addEventListener('change', function() {
+                    // Check if we have data to re-aggregate
+                    if (window.lastProcessedData && window.lastProcessedData.length > 0) {
+                        const interval = parseFloat(this.value) || 0;
+                        console.log(`Re-aggregating data with new interval: $${interval}`);
+                        
+                        // Re-aggregate the data
+                        const aggregatedData = aggregateByPriceInterval(window.lastProcessedData, interval);
+                        
+                        // Update display with aggregated data
+                        updateStats(aggregatedData);
+                        populateTable(aggregatedData);
+                        updateChart(aggregatedData);
+                        
+                        const aggregationText = interval > 0 ? ` (re-aggregated by $${interval} intervals)` : '';
+                        showStatus(`Data re-aggregated: ${aggregatedData.length} data points${aggregationText}`, 'success');
+                    } else {
+                        showStatus('No data available. Please fetch data first.', 'error');
+                    }
+                });
+            }
+        });
+
+        function updateProgress(percent, text) {
+            const progressContainer = document.getElementById('progressContainer');
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            
+            if (progressContainer) {
+                progressContainer.style.display = 'block';
+            }
+            
+            if (progressFill) {
+                progressFill.style.width = percent + '%';
+            }
+            
+            if (progressText) {
+                progressText.textContent = text || percent + '%';
+            }
+        }
+
+        function hideProgress() {
+            const progressContainer = document.getElementById('progressContainer');
+            if (progressContainer) {
+                progressContainer.style.display = 'none';
+            }
+        }
+
+        function aggregateByPriceInterval(data, interval) {
+            if (!interval || interval <= 0) {
+                return data; // No aggregation
+            }
+
+            const aggregated = {};
+            
+            data.forEach(item => {
+                const price = item.price || 0;
+                const priceRange = Math.floor(price / interval) * interval;
+                const rangeKey = `${priceRange}-${priceRange + interval}`;
+                
+                if (!aggregated[rangeKey]) {
+                    aggregated[rangeKey] = {
+                        priceRange: priceRange,
+                        priceRangeEnd: priceRange + interval,
+                        long_volume: 0,
+                        short_volume: 0,
+                        total_volume: 0,
+                        count: 0
+                    };
+                }
+                
+                aggregated[rangeKey].long_volume += item.long_volume;
+                aggregated[rangeKey].short_volume += item.short_volume;
+                aggregated[rangeKey].total_volume += item.total_volume;
+                aggregated[rangeKey].count += 1;
+            });
+            
+            // Convert to array and use midpoint of range as price
+            return Object.values(aggregated).map(item => ({
+                timestamp: item.priceRange, // Use price range as timestamp for sorting
+                price: item.priceRange + (item.priceRangeEnd - item.priceRange) / 2, // Midpoint
+                long_volume: item.long_volume,
+                short_volume: item.short_volume,
+                total_volume: item.total_volume,
+                long_short_ratio: item.long_volume / (item.short_volume || 1)
+            })).sort((a, b) => a.price - b.price);
+        }
+
+        function calculateStartDate(months) {
+            const end = Math.floor(Date.now() / 1000);
+            
+            // For maximum available period, use a very old date (10 years ago)
+            if (months === 0) {
+                const start = end - (10 * 365 * 24 * 60 * 60); // 10 years ago
+                return { start, end };
+            }
+            
+            const start = end - (months * 30 * 24 * 60 * 60);
+            return { start, end };
+        }
+
+        function formatCurrency(value) {
+            if (value >= 1e9) {
+                return '$' + (value / 1e9).toFixed(2) + 'B';
+            } else if (value >= 1e6) {
+                return '$' + (value / 1e6).toFixed(2) + 'M';
+            } else if (value >= 1e3) {
+                return '$' + (value / 1e3).toFixed(2) + 'K';
+            }
+            return '$' + value.toFixed(2);
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        function updateStats(data) {
+            const totalRecords = data.length;
+            const totalVolume = data.reduce((sum, item) => sum + (item.total_volume || 0), 0);
+            const avgVolume = totalRecords > 0 ? totalVolume / totalRecords : 0;
+            const maxVolume = Math.max(...data.map(item => item.total_volume || 0));
+
+            document.getElementById('totalRecords').textContent = totalRecords;
+            document.getElementById('totalVolume').textContent = formatCurrency(totalVolume);
+            document.getElementById('avgVolume').textContent = formatCurrency(avgVolume);
+            document.getElementById('maxVolume').textContent = formatCurrency(maxVolume);
+        }
+
+        function populateTable(data) {
+            const tbody = document.getElementById('dataTable');
+            tbody.innerHTML = '';
+
+            data.forEach(item => {
+                const row = document.createElement('tr');
+                
+                const date = new Date(item.timestamp * 1000).toLocaleDateString();
+                const longVolume = item.long_volume || 0;
+                const shortVolume = item.short_volume || 0;
+                const totalVolume = item.total_volume || 0;
+                const ratio = item.long_short_ratio || 0;
+                const price = item.price || 0;
+                
+                row.innerHTML = `
+                    <td>${date}</td>
+                    <td class="long">${formatCurrency(longVolume)}</td>
+                    <td class="short">${formatCurrency(shortVolume)}</td>
+                    <td>${formatCurrency(totalVolume)}</td>
+                    <td>${ratio.toFixed(2)}</td>
+                    <td>${formatCurrency(price)}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function updateChart(data) {
+            const ctx = document.getElementById('liquidationChart');
+            
+            // Destroy existing chart if it exists
+            if (window.liquidationChartInstance) {
+                window.liquidationChartInstance.destroy();
+            }
+
+            // Sort data by price ascending for ordered X-axis
+            const sortedData = [...data].sort((a, b) => (a.price || 0) - (b.price || 0));
+
+            // Prepare data for chart
+            const labels = sortedData.map(item => formatCurrency(item.price || 0));
+            const longVolumes = sortedData.map(item => item.long_volume || 0);
+            const shortVolumes = sortedData.map(item => item.short_volume || 0);
+
+            // Create new chart
+            window.liquidationChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Long Liquidations',
+                            data: longVolumes,
+                            backgroundColor: 'rgba(5, 150, 105, 0.7)',
+                            borderColor: 'rgba(5, 150, 105, 1)',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Short Liquidations',
+                            data: shortVolumes,
+                            backgroundColor: 'rgba(220, 38, 38, 0.7)',
+                            borderColor: 'rgba(220, 38, 38, 1)',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        zoom: {
+                            pan: {
+                                enabled: true,
+                                mode: 'x'
+                            },
+                            zoom: {
+                                wheel: {
+                                    enabled: true
+                                },
+                                pinch: {
+                                    enabled: true
+                                },
+                                mode: 'x'
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: 'Liquidation Volume by Price',
+                            color: '#1e293b',
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + formatCurrency(context.raw);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Price (USD)'
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: 'Liquidation Volume (USD)'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return formatCurrency(value);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function fetchLiquidationData() {
+            const apiKey = document.getElementById('apiKey').value.trim() || 'FREE';
+            const symbol = document.getElementById('symbol').value;
+            const months = parseInt(document.getElementById('timePeriod').value);
+            const fetchBtn = document.getElementById('fetchBtn');
+            const dataDisplay = document.getElementById('dataDisplay');
+
+            // Save API key to localStorage
+            if (apiKey && apiKey !== 'FREE') {
+                localStorage.setItem('coinalyze_api_key', apiKey);
+            }
+
+            const { start, end } = calculateStartDate(months);
+
+            fetchBtn.disabled = true;
+            showStatus('Fetching liquidation data from Coinalyze...', 'loading');
+            dataDisplay.classList.remove('active');
+            updateProgress(10, 'Fetching liquidation data...');
+
+            try {
+                console.log('=== Starting Coinalyze Liquidation Data Fetch ===');
+                console.log('Symbol:', symbol);
+                console.log('Time period:', months, 'months');
+                console.log('Date range:', start, 'to', end);
+                console.log('API Key:', apiKey);
+
+                // Use local proxy server to avoid CORS issues
+                const url = `http://127.0.0.1:8000/api/liquidation-history`;
+                const params = new URLSearchParams({
+                    symbols: symbol,
+                    interval: 'daily',
+                    from: start,
+                    to: end,
+                    api_key: apiKey
+                });
+
+                console.log('Proxy URL:', url);
+                console.log('Params:', params.toString());
+                updateProgress(20, 'Fetching liquidation data...');
+
+                const response = await fetch(`${url}?${params}`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+
+                console.log('Response status:', response.status);
+                console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        throw new Error('Authentication failed. Check your API key.');
+                    } else if (response.status === 429) {
+                        throw new Error('Rate limit exceeded. Please try again later.');
+                    } else {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                } else {
+                    console.log('✓ Response OK');
+                    updateProgress(30, 'Parsing liquidation data...');
+
+                    const data = await response.json();
+                    console.log('Data structure:', typeof data, 'Array:', Array.isArray(data));
+                    console.log('Full response:', data);
+
+                    // Coinalyze returns an object with 'history' array
+                    let liquidationData = [];
+                    if (Array.isArray(data) && data.length > 0) {
+                        // If it's an array, check if the first item has a 'history' property
+                        if (data[0].history && Array.isArray(data[0].history)) {
+                            liquidationData = data[0].history;
+                            console.log('✓ Extracted history array from array response');
+                        } else {
+                            liquidationData = data;
+                            console.log('✓ Using array directly');
+                        }
+                    } else if (data.history && Array.isArray(data.history)) {
+                        liquidationData = data.history;
+                        console.log('✓ Extracted history array from object response');
+                    } else if (data.data && Array.isArray(data.data)) {
+                        liquidationData = data.data;
+                        console.log('✓ Extracted data array from object response');
+                    } else {
+                        console.error('Response is not array or is empty');
+                        console.error('Response keys:', Object.keys(data));
+                        throw new Error('No liquidation data found. The symbol may be incorrect or the API may be unavailable.');
+                    }
+
+                    if (liquidationData.length > 0) {
+                        console.log(`✓ Got ${liquidationData.length} records`);
+                        console.log('Sample record:', liquidationData[0]);
+
+                        // Fetch price data to add to liquidation data
+                        console.log('\n=== Fetching Price Data ===');
+                        updateProgress(50, 'Fetching price data...');
+                        const priceData = await fetchPriceData(symbol, start, end, apiKey);
+                        console.log('Got price data:', priceData ? priceData.length : 0, 'records');
+
+                        // Create a map of timestamps to prices
+                        const priceMap = {};
+                        if (priceData && priceData.length > 0) {
+                            priceData.forEach(item => {
+                                const timestamp = item.t || item.timestamp || item.time;
+                                priceMap[timestamp] = item.c || item.close || item.price || 0;
+                            });
+                        }
+
+                        updateProgress(70, 'Processing data...');
+
+                        // Process data - Coinalyze uses l=long, s=short, t=timestamp
+                        const processedData = liquidationData.map(item => {
+                            const timestamp = item.t || item.timestamp || item.time;
+                            
+                            // Find closest timestamp in price data
+                            let price = 0;
+                            if (priceData && priceData.length > 0) {
+                                let minDiff = Infinity;
+                                for (const priceItem of priceData) {
+                                    const priceTimestamp = priceItem.t || priceItem.timestamp || priceItem.time;
+                                    const diff = Math.abs(timestamp - priceTimestamp);
+                                    if (diff < minDiff) {
+                                        minDiff = diff;
+                                        price = priceItem.c || priceItem.close || priceItem.price || 0;
+                                    }
+                                }
+                            }
+                            
+                            return {
+                                timestamp: timestamp,
+                                long_volume: item.l || item.long_volume || item.longVolume || 0,
+                                short_volume: item.s || item.short_volume || item.shortVolume || 0,
+                                total_volume: (item.l || item.long_volume || item.longVolume || 0) + (item.s || item.short_volume || item.shortVolume || 0),
+                                long_short_ratio: (item.l || item.long_volume || item.longVolume || 0) / (item.s || item.short_volume || item.shortVolume || 1),
+                                price: price
+                            };
+                        });
+
+                        // Store processed data globally for re-aggregation
+                        window.lastProcessedData = processedData;
+
+                        updateProgress(90, 'Updating display...');
+
+                    // Get price interval for aggregation
+                    const priceInterval = parseFloat(document.getElementById('priceInterval').value) || 0;
+                    
+                    // Aggregate data by price interval if specified
+                    let finalData = processedData;
+                    if (priceInterval > 0) {
+                        console.log(`Aggregating data by $${priceInterval} price intervals...`);
+                        finalData = aggregateByPriceInterval(processedData, priceInterval);
+                        console.log(`✓ Aggregated from ${processedData.length} to ${finalData.length} data points`);
+                    }
+
+                    updateStats(finalData);
+                    populateTable(finalData);
+                    updateChart(finalData);
+                    dataDisplay.classList.add('active');
+                    
+                    const aggregationText = priceInterval > 0 ? ` (aggregated by $${priceInterval} intervals)` : '';
+                    showStatus(`Successfully fetched ${finalData.length} liquidation records with prices${aggregationText}`, 'success');
+                    hideProgress();
+                    } else {
+                        console.error('Response is not array or is empty');
+                        console.error('Response keys:', Object.keys(data));
+                        throw new Error('No liquidation data found. The symbol may be incorrect or the API may be unavailable.');
+                    }
+                }
+            } catch (error) {
+                console.error('Full error:', error);
+                console.error('Error type:', error.constructor.name);
+                console.error('Error message:', error.message);
+                console.error('Error stack:', error.stack);
+                hideProgress();
+                throw error;
+            } finally {
+                fetchBtn.disabled = false;
+            }
+        }
+
+        async function fetchPriceData(symbol, start, end, apiKey) {
+            try {
+                const url = `http://127.0.0.1:8000/api/price-history`;
+                const params = new URLSearchParams({
+                    symbols: symbol,
+                    interval: 'daily',
+                    from: start,
+                    to: end,
+                    api_key: apiKey
+                });
+
+                const response = await fetch(`${url}?${params}`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Price data structure:', typeof data, Array.isArray(data));
+                    
+                    // Handle different response structures
+                    let priceData = [];
+                    if (Array.isArray(data) && data.length > 0) {
+                        if (data[0].history && Array.isArray(data[0].history)) {
+                            priceData = data[0].history;
+                        } else {
+                            priceData = data;
+                        }
+                    } else if (data.history && Array.isArray(data.history)) {
+                        priceData = data.history;
+                    }
+                    
+                    return priceData;
+                }
+            } catch (error) {
+                console.error('Error fetching price data:', error);
+            }
+            return [];
+        }
+    </script>
+</body>
+</html>
