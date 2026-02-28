@@ -1,11 +1,38 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ComposedChart } from 'recharts';
 import { TrendingUp, TrendingDown, RefreshCw, Loader2 } from 'lucide-react';
 import { exchangesApi, symbolsApi } from '@/services/api';
 import { useTechnicalIndicators } from '@/hooks/usePrices';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { clsx } from 'clsx';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ChartData,
+  ChartOptions,
+} from 'chart.js';
+import zoomPlugin from 'chartjs-plugin-zoom';
+import { Chart } from 'react-chartjs-2';
+
+// Register Chart.js components
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  zoomPlugin
+);
 
 export function Prices() {
   const [selectedExchange, setSelectedExchange] = useState<string>('binance');
@@ -51,11 +78,127 @@ export function Prices() {
   const priceChange = mockPriceData[mockPriceData.length - 1].price - mockPriceData[0].price;
   const priceChangePercent = (priceChange / mockPriceData[0].price) * 100;
 
-  // Ticks para o eixo de preço (50000-100000 com intervalo de 200)
-  const priceTicks = [];
-  for (let i = 50000; i <= 100000; i += 200) {
-    priceTicks.push(i);
-  }
+  // Chart data
+  const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
+    return {
+      labels: mockPriceData.map((d) => d.time),
+      datasets: [
+        {
+          type: 'line' as const,
+          label: 'Price',
+          data: mockPriceData.map((d) => d.price),
+          borderColor: '#3b82f6',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 6,
+          yAxisID: 'y',
+          tension: 0.4,
+        },
+        {
+          type: 'bar' as const,
+          label: 'Volume',
+          data: mockPriceData.map((d) => d.volume),
+          backgroundColor: '#10b981',
+          borderRadius: 4,
+          yAxisID: 'y1',
+        },
+      ],
+    };
+  }, []);
+
+  const chartOptions: ChartOptions<'bar' | 'line'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      mode: 'index',
+      intersect: false,
+    },
+    plugins: {
+      legend: {
+        display: true,
+        labels: {
+          color: 'hsl(var(--muted-foreground))',
+        },
+      },
+      tooltip: {
+        backgroundColor: 'hsl(var(--card))',
+        titleColor: 'hsl(var(--card-foreground))',
+        bodyColor: 'hsl(var(--card-foreground))',
+        borderColor: 'hsl(var(--border))',
+        borderWidth: 1,
+        padding: 12,
+        cornerRadius: 8,
+        callbacks: {
+          label: (context) => {
+            const value = context.parsed.y ?? 0;
+            const label = context.dataset.label || '';
+            if (label === 'Price') return `Price: ${Number(value).toLocaleString()}`;
+            return `${label}: ${value.toLocaleString()}`;
+          },
+        },
+      },
+      zoom: {
+        pan: {
+          enabled: true,
+          mode: 'x',
+        },
+        zoom: {
+          wheel: {
+            enabled: true,
+          },
+          pinch: {
+            enabled: true,
+          },
+          mode: 'x',
+        },
+      },
+    },
+    scales: {
+      x: {
+        grid: {
+          color: 'hsl(var(--muted) / 0.3)',
+        },
+        ticks: {
+          color: 'hsl(var(--muted-foreground))',
+          font: {
+            size: 11,
+          },
+        },
+      },
+      y: {
+        type: 'linear',
+        display: true,
+        position: 'left',
+        grid: {
+          color: 'hsl(var(--muted) / 0.3)',
+        },
+        ticks: {
+          color: 'hsl(var(--muted-foreground))',
+          font: {
+            size: 11,
+          },
+          callback: (value) => `$${Number(value).toLocaleString()}`,
+        },
+        min: 40000,
+        max: 50000,
+      },
+      y1: {
+        type: 'linear',
+        display: true,
+        position: 'right',
+        grid: {
+          drawOnChartArea: false,
+        },
+        ticks: {
+          color: 'hsl(var(--muted-foreground))',
+          font: {
+            size: 11,
+          },
+        },
+      },
+    },
+  };
 
   return (
     <div className="space-y-6">
@@ -167,57 +310,7 @@ export function Prices() {
         <CardHeader title={`${selectedSymbol} Price Chart`} description={`${selectedExchange.toUpperCase()} - ${timeInterval}`} />
         <CardContent>
           <div className="h-[400px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={mockPriceData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="time" className="text-xs" />
-                
-                {/* Eixo Y para PREÇO (esquerda) */}
-                <YAxis 
-                  yAxisId="price"
-                  domain={[50000, 100000]}
-                  ticks={priceTicks}
-                  orientation="left"
-                  className="text-xs" 
-                  tickFormatter={(value) => `${value.toLocaleString()}`}
-                />
-                
-                {/* Eixo Y para VOLUME (direita) */}
-                <YAxis 
-                  yAxisId="volume"
-                  orientation="right"
-                  className="text-xs"
-                  domain={['auto', 'auto']}
-                />
-                
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
-                  }}
-                />
-                <Legend />
-                <Line
-                  yAxisId="price"
-                  type="monotone"
-                  dataKey="price"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Price"
-                />
-                <Line
-                  yAxisId="volume"
-                  type="monotone"
-                  dataKey="volume"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Volume"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
+            <Chart type="bar" data={chartData} options={chartOptions} />
           </div>
         </CardContent>
       </Card>

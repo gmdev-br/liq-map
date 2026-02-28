@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
     RefreshCw,
     BarChart3,
@@ -11,23 +11,42 @@ import {
     TrendingDown,
     Clock,
     Download,
-    Upload
+    Upload,
+    RotateCcw
 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
-import {
-    BarChart,
-    Bar,
-    XAxis,
-    YAxis,
-    CartesianGrid,
-    Tooltip,
-    ResponsiveContainer,
-    Legend
-} from 'recharts';
 import axios from 'axios';
 import { format } from 'date-fns';
 import { useCacheData } from '@/hooks/useCacheData';
 import { exportToCSV, exportToJSON, importFromCSV, importFromJSON, generateExportFilename } from '@/utils/exportImport';
+import {
+    Chart as ChartJS,
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    BarElement,
+    Title,
+    Tooltip as ChartTooltip,
+    Legend as ChartLegend,
+    ChartData,
+    ChartOptions,
+} from 'chart.js';
+import zoomPlugin from 'chartjs-plugin-zoom';
+import crosshairPlugin from 'chartjs-plugin-crosshair';
+import { Chart } from 'react-chartjs-2';
+
+// Register Chart.js components
+ChartJS.register(
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    BarElement,
+    Title,
+    ChartTooltip,
+    ChartLegend,
+    zoomPlugin,
+    crosshairPlugin
+);
 
 interface HistoricalLiquidation {
     timestamp: number;
@@ -36,6 +55,177 @@ interface HistoricalLiquidation {
     total_volume: number;
     long_short_ratio: number;
     price: number;
+}
+
+// Liquidation Chart Component
+interface LiquidationChartProps {
+    data: HistoricalLiquidation[];
+    formatCurrency: (value: number) => string;
+}
+
+function LiquidationChart({ data, formatCurrency }: LiquidationChartProps) {
+    const chartRef = useRef<any>(null);
+    
+    const resetZoom = () => {
+        if (chartRef.current) {
+            chartRef.current.resetZoom();
+        }
+    };
+
+    const chartData: ChartData<'bar'> = {
+        labels: data.map((d) => formatCurrency(d.price)),
+        datasets: [
+            {
+                label: 'Longs',
+                data: data.map((d) => d.long_volume),
+                backgroundColor: '#10b981',
+                borderRadius: 4,
+            },
+            {
+                label: 'Shorts',
+                data: data.map((d) => d.short_volume),
+                backgroundColor: '#ef4444',
+                borderRadius: 4,
+            },
+        ],
+    };
+
+    const chartOptions: any = {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+            mode: 'index',
+            intersect: false,
+        },
+        plugins: {
+            legend: {
+                display: true,
+                position: 'top',
+                labels: {
+                    color: 'hsl(var(--muted-foreground))',
+                    usePointStyle: true,
+                    padding: 20,
+                },
+            },
+            tooltip: {
+                enabled: true,
+                backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                titleColor: '#f8fafc',
+                bodyColor: '#f8fafc',
+                borderColor: 'rgba(148, 163, 184, 0.3)',
+                borderWidth: 1,
+                padding: 12,
+                cornerRadius: 8,
+                titleFont: {
+                    size: 13,
+                    weight: 'bold',
+                },
+                bodyFont: {
+                    size: 12,
+                },
+                displayColors: true,
+                boxPadding: 4,
+                callbacks: {
+                    title: (items: any) => {
+                        if (!items.length) return '';
+                        const idx = items[0].dataIndex;
+                        const item = data[idx];
+                        if (!item) return '';
+                        return `Price: ${formatCurrency(item.price)}`;
+                    },
+                    label: (context: any) => {
+                        const value = context.parsed.y ?? 0;
+                        const color = context.dataset.label === 'Longs' ? '#10b981' : '#ef4444';
+                        return `  ${context.dataset.label}: ${formatCurrency(value)}`;
+                    },
+                    afterBody: (items: any) => {
+                        if (!items.length) return '';
+                        const idx = items[0].dataIndex;
+                        const item = data[idx];
+                        if (!item) return '';
+                        const total = item.long_volume + item.short_volume;
+                        const ratio = item.long_short_ratio;
+                        return [`  ─────────────`, `  Total: ${formatCurrency(total)}`, `  L/S Ratio: ${ratio.toFixed(2)}`];
+                    },
+                },
+            },
+            crosshair: {
+                enabled: true,
+                mode: 'index',
+                intersect: false,
+                line: {
+                    color: 'rgba(148, 163, 184, 0.5)',
+                    width: 1,
+                    dash: [5, 5],
+                },
+                sync: {
+                    enabled: false,
+                },
+                zoom: {
+                    enabled: true,
+                },
+            },
+            zoom: {
+                pan: {
+                    enabled: true,
+                    mode: 'x',
+                },
+                zoom: {
+                    wheel: {
+                        enabled: true,
+                    },
+                    pinch: {
+                        enabled: true,
+                    },
+                    drag: {
+                        enabled: false,
+                    },
+                    mode: 'x',
+                },
+            },
+        },
+        scales: {
+            x: {
+                grid: {
+                    color: 'hsl(var(--muted) / 0.3)',
+                },
+                ticks: {
+                    color: 'hsl(var(--muted-foreground))',
+                    font: {
+                        size: 10,
+                    },
+                    maxRotation: 45,
+                    maxTicksLimit: 15,
+                },
+            },
+            y: {
+                grid: {
+                    color: 'hsl(var(--muted) / 0.3)',
+                },
+                ticks: {
+                    color: 'hsl(var(--muted-foreground))',
+                    font: {
+                        size: 11,
+                    },
+                    callback: (value: any) => formatCurrency(Number(value)),
+                },
+            },
+        },
+    };
+
+    return (
+        <div className="relative w-full h-full">
+            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions} />
+            <button
+                onClick={resetZoom}
+                className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 text-xs bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 rounded-md border border-slate-600 transition-colors"
+                title="Reset Zoom"
+            >
+                <RotateCcw className="h-3 w-3" />
+                Reset
+            </button>
+        </div>
+    );
 }
 
 export function LiquidationTest() {
@@ -514,31 +704,7 @@ export function LiquidationTest() {
                     <Card>
                         <CardHeader title="Volume de Liquidação por Preço" description="Distribuição de Longs vs Shorts" />
                         <CardContent className="h-[400px]">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={processedData}>
-                                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                                    <XAxis
-                                        dataKey="price"
-                                        tickFormatter={(val) => formatCurrency(val)}
-                                        fontSize={12}
-                                    />
-                                    <YAxis
-                                        tickFormatter={(val) => formatCurrency(val)}
-                                        fontSize={12}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{
-                                            backgroundColor: 'hsl(var(--card))',
-                                            border: '1px solid hsl(var(--border))',
-                                            borderRadius: '8px'
-                                        }}
-                                        formatter={(value: number) => formatCurrency(value)}
-                                    />
-                                    <Legend />
-                                    <Bar dataKey="long_volume" name="Longs" fill="#10b981" radius={[4, 4, 0, 0]} />
-                                    <Bar dataKey="short_volume" name="Shorts" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
+                            <LiquidationChart data={processedData} formatCurrency={formatCurrency} />
                         </CardContent>
                     </Card>
 
