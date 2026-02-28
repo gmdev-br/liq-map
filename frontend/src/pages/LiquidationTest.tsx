@@ -590,7 +590,7 @@ export function LiquidationTest() {
         if (!symbol) return;
         try {
             const end = Math.floor(Date.now() / 1000);
-            const start = end - (24 * 60 * 60); // 1 day window is enough for current price
+            const start = end - (3600); // 1 hour is more than enough for current ticker
 
             const priceResponse = await axios.get('/api/price-history', {
                 params: {
@@ -602,7 +602,11 @@ export function LiquidationTest() {
 
             const priceData = Array.isArray(priceResponse.data) ? priceResponse.data : [];
             if (priceData.length > 0) {
-                setCurrentPrice(Number(priceData[priceData.length - 1].c || 0));
+                const latestPrice = Number(priceData[priceData.length - 1].c || 0);
+                if (latestPrice > 0) {
+                    console.log(`[Auto-Update] New price for ${symbol}: ${latestPrice}`);
+                    setCurrentPrice(latestPrice);
+                }
             }
         } catch (error) {
             console.error('Error auto-updating price:', error);
