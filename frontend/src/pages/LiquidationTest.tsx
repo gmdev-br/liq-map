@@ -61,7 +61,7 @@ interface HistoricalLiquidation {
 interface LiquidationChartProps {
     data: HistoricalLiquidation[];
     formatCurrency: (value: number) => string;
-    groupBy?: 'none' | 'long' | 'short' | 'combined';
+    groupBy?: 'none' | 'long' | 'short' | 'combined' | 'stacked';
 }
 
 function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: LiquidationChartProps) {
@@ -73,22 +73,33 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
         }
     };
 
+    // Sort data by price for proper x-axis ordering
+    const sortedData = [...data].sort((a, b) => a.price - b.price);
+
+    // Create chart data based on groupBy selection
     const chartData: ChartData<'bar'> = {
-        labels: data.map((d) => formatCurrency(d.price)),
-        datasets: [
-            {
-                label: 'Longs',
-                data: data.map((d) => d.long_volume),
-                backgroundColor: '#10b981',
+        labels: sortedData.map((d) => formatCurrency(d.price)),
+        datasets: groupBy === 'stacked' 
+            ? [{
+                label: 'Total Volume',
+                data: sortedData.map((d) => d.long_volume + d.short_volume),
+                backgroundColor: '#3b82f6',
                 borderRadius: 4,
-            },
-            {
-                label: 'Shorts',
-                data: data.map((d) => d.short_volume),
-                backgroundColor: '#ef4444',
-                borderRadius: 4,
-            },
-        ],
+            }]
+            : [
+                {
+                    label: 'Longs',
+                    data: sortedData.map((d) => d.long_volume),
+                    backgroundColor: '#10b981',
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Shorts',
+                    data: sortedData.map((d) => d.short_volume),
+                    backgroundColor: '#ef4444',
+                    borderRadius: 4,
+                },
+            ],
     };
 
     const chartOptions: any = {
@@ -100,20 +111,20 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
         },
         plugins: {
             legend: {
-                display: true,
+                display: groupBy !== 'stacked',
                 position: 'top',
                 labels: {
-                    color: 'hsl(var(--muted-foreground))',
+                    color: '#64748b',
                     usePointStyle: true,
                     padding: 20,
                 },
             },
             tooltip: {
                 enabled: true,
-                backgroundColor: 'rgba(15, 23, 42, 0.95)',
-                titleColor: '#f8fafc',
-                bodyColor: '#f8fafc',
-                borderColor: 'rgba(148, 163, 184, 0.3)',
+                backgroundColor: '#1e293b',
+                titleColor: '#f1f5f9',
+                bodyColor: '#f1f5f9',
+                borderColor: '#475569',
                 borderWidth: 1,
                 padding: 12,
                 cornerRadius: 8,
@@ -130,19 +141,24 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
                     title: (items: any) => {
                         if (!items.length) return '';
                         const idx = items[0].dataIndex;
-                        const item = data[idx];
+                        const item = sortedData[idx];
                         if (!item) return '';
-                        return `Price: ${formatCurrency(item.price)}`;
+                        const date = new Date(item.timestamp * 1000);
+                        const dateStr = date.toLocaleDateString('pt-BR');
+                        return `Price: ${formatCurrency(item.price)} | ${dateStr}`;
                     },
                     label: (context: any) => {
                         const value = context.parsed.y ?? 0;
+                        if (groupBy === 'stacked') {
+                            return `  Total: ${formatCurrency(value)}`;
+                        }
                         const color = context.dataset.label === 'Longs' ? '#10b981' : '#ef4444';
                         return `  ${context.dataset.label}: ${formatCurrency(value)}`;
                     },
                     afterBody: (items: any) => {
                         if (!items.length) return '';
                         const idx = items[0].dataIndex;
-                        const item = data[idx];
+                        const item = sortedData[idx];
                         if (!item) return '';
                         const total = item.long_volume + item.short_volume;
                         const ratio = item.long_short_ratio;
@@ -155,9 +171,9 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
                 mode: 'index',
                 intersect: false,
                 line: {
-                    color: 'rgba(148, 163, 184, 0.5)',
+                    color: '#64748b',
                     width: 1,
-                    dash: [5, 5],
+                    dash: [],
                 },
                 sync: {
                     enabled: false,
@@ -187,26 +203,26 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
         },
         scales: {
             x: {
-                stacked: groupBy === 'combined',
+                stacked: groupBy === 'combined' || groupBy === 'stacked',
                 grid: {
-                    color: 'hsl(var(--muted) / 0.3)',
+                    display: false,
                 },
                 ticks: {
-                    color: 'hsl(var(--muted-foreground))',
+                    color: '#64748b',
                     font: {
-                        size: 10,
+                        size: 11,
                     },
                     maxRotation: 45,
                     maxTicksLimit: 15,
                 },
             },
             y: {
-                stacked: groupBy === 'combined',
+                stacked: groupBy === 'combined' || groupBy === 'stacked',
                 grid: {
-                    color: 'hsl(var(--muted) / 0.3)',
+                    display: false,
                 },
                 ticks: {
-                    color: 'hsl(var(--muted-foreground))',
+                    color: '#64748b',
                     font: {
                         size: 11,
                     },
@@ -239,7 +255,9 @@ export function LiquidationTest() {
     const [amountMin, setAmountMin] = useState<string>('');
     const [amountMax, setAmountMax] = useState<string>('');
     const [side, setSide] = useState<'all' | 'long' | 'short'>('all');
-    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined'>('none');
+    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>('none');
+    const [ratioFilter, setRatioFilter] = useState<string>('');
+    const [ratioFilterMax, setRatioFilterMax] = useState<string>('');
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
@@ -492,18 +510,30 @@ export function LiquidationTest() {
     useEffect(() => {
         const min = amountMin && !isNaN(parseFloat(amountMin)) ? parseFloat(amountMin) : 0;
         const max = amountMax && !isNaN(parseFloat(amountMax)) ? parseFloat(amountMax) : Infinity;
+        const ratioMin = ratioFilter && !isNaN(parseFloat(ratioFilter)) ? parseFloat(ratioFilter) : null;
+        const ratioMax = ratioFilterMax && !isNaN(parseFloat(ratioFilterMax)) ? parseFloat(ratioFilterMax) : null;
         
         // First filter by min/max amount
-        const amountFiltered = data.filter(item => 
+        let amountFiltered = data.filter(item => 
             item.total_volume >= min && (max === Infinity || item.total_volume <= max)
         );
         
+        // Then filter by ratio if specified
+        if (ratioMin !== null || ratioMax !== null) {
+            amountFiltered = amountFiltered.filter(item => {
+                const ratio = item.long_short_ratio;
+                if (ratioMin !== null && ratio < ratioMin) return false;
+                if (ratioMax !== null && ratio > ratioMax) return false;
+                return true;
+            });
+        }
+        
         setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
-    }, [data, priceInterval, side, amountMin, amountMax]);
+    }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax]);
 
     // Filter data for chart display based on groupBy selection
     const chartData = useMemo(() => {
-        if (groupBy === 'none' || groupBy === 'combined') {
+        if (groupBy === 'none' || groupBy === 'combined' || groupBy === 'stacked') {
             return processedData;
         }
         return processedData.map(item => ({
@@ -673,7 +703,7 @@ export function LiquidationTest() {
                         </div>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 pt-2 border-t border-border">
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 pt-2 border-t border-border">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Lado da Liquidação</label>
                             <div className="flex gap-2">
@@ -695,13 +725,14 @@ export function LiquidationTest() {
                             <label className="text-sm font-medium">Agrupar Por</label>
                             <select
                                 value={groupBy}
-                                onChange={(e) => setGroupBy(e.target.value as 'none' | 'long' | 'short' | 'combined')}
+                                onChange={(e) => setGroupBy(e.target.value as 'none' | 'long' | 'short' | 'combined' | 'stacked')}
                                 className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
                             >
                                 <option value="none">Todos (Long + Short)</option>
                                 <option value="long">Apenas Long</option>
                                 <option value="short">Apenas Short</option>
                                 <option value="combined">Combinado (Empilhado)</option>
+                                <option value="stacked">Agrupado (1 Cor)</option>
                             </select>
                         </div>
                         <div className="space-y-2">
@@ -714,6 +745,26 @@ export function LiquidationTest() {
                                 className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
                             />
                             <p className="text-[10px] text-muted-foreground">Útil para ver volumes por faixas de preço específicas</p>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Taxa L/S (Min - Max)</label>
+                            <div className="flex gap-2">
+                                <input
+                                    type="number"
+                                    value={ratioFilter}
+                                    onChange={(e) => setRatioFilter(e.target.value)}
+                                    placeholder="Min"
+                                    className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                />
+                                <input
+                                    type="number"
+                                    value={ratioFilterMax}
+                                    onChange={(e) => setRatioFilterMax(e.target.value)}
+                                    placeholder="Max"
+                                    className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                />
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">Filtrar por faixa de taxa Long/Short</p>
                         </div>
                     </div>
                 </CardContent>
