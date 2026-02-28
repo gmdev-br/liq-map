@@ -394,15 +394,49 @@ export function LiquidationTest() {
 
         const aggregated: Record<string, any> = {};
 
+        // Encontrar o menor e maior range de preço para preencher os buracos
+        let minRange = Infinity;
+        let maxRange = -Infinity;
+
         filtered.forEach(item => {
             const price = item.price || 0;
             const priceRange = Math.floor(price / interval) * interval;
-            const rangeKey = `${priceRange}-${priceRange + interval}`;
+            minRange = Math.min(minRange, priceRange);
+            maxRange = Math.max(maxRange, priceRange);
+        });
+
+        // Preencher todos os intervalos possíveis com zero
+        if (minRange !== Infinity && maxRange !== -Infinity) {
+            // Limite de sanidade para não travar o navegador caso o intervalo seja muito pequeno em relação ao range
+            const steps = (maxRange - minRange) / interval;
+            if (steps <= 50000) {
+                for (let r = minRange; r <= maxRange; r += interval) {
+                    // Garantir precisão flutuante
+                    const safeR = Number(r.toFixed(8));
+                    const safeREnd = Number((r + interval).toFixed(8));
+                    const rangeKey = `${safeR}-${safeREnd}`;
+                    aggregated[rangeKey] = {
+                        priceRange: safeR,
+                        priceRangeEnd: safeREnd,
+                        long_volume: 0,
+                        short_volume: 0,
+                        total_volume: 0,
+                        count: 0
+                    };
+                }
+            }
+        }
+
+        filtered.forEach(item => {
+            const price = item.price || 0;
+            const priceRange = Number((Math.floor(price / interval) * interval).toFixed(8));
+            const priceRangeEnd = Number((priceRange + interval).toFixed(8));
+            const rangeKey = `${priceRange}-${priceRangeEnd}`;
 
             if (!aggregated[rangeKey]) {
                 aggregated[rangeKey] = {
                     priceRange: priceRange,
-                    priceRangeEnd: priceRange + interval,
+                    priceRangeEnd: priceRangeEnd,
                     long_volume: 0,
                     short_volume: 0,
                     total_volume: 0,
