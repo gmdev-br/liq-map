@@ -38,6 +38,7 @@ export function Prices() {
   const [selectedExchange, setSelectedExchange] = useState<string>('binance');
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC/USDT');
   const [timeInterval, setTimeInterval] = useState<string>('1h');
+  const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short'>('none');
 
   // Fetch exchanges
   const { data: exchanges } = useQuery({
@@ -64,30 +65,47 @@ export function Prices() {
     interval: timeInterval,
   });
 
-  // Mock price data (replace with actual API call)
+  // Mock price data with long/short sides (replace with actual API call)
   const mockPriceData = [
-    { time: '00:00', price: 42000, volume: 1200 },
-    { time: '04:00', price: 42500, volume: 1500 },
-    { time: '08:00', price: 41800, volume: 1800 },
-    { time: '12:00', price: 43200, volume: 2200 },
-    { time: '16:00', price: 42800, volume: 1900 },
-    { time: '20:00', price: 43500, volume: 2100 },
-    { time: '24:00', price: 44000, volume: 2500 },
+    { time: '00:00', price: 42000, volume: 1200, side: 'long' },
+    { time: '02:00', price: 42100, volume: 800, side: 'short' },
+    { time: '04:00', price: 42500, volume: 1500, side: 'long' },
+    { time: '06:00', price: 42300, volume: 900, side: 'short' },
+    { time: '08:00', price: 41800, volume: 1800, side: 'long' },
+    { time: '10:00', price: 41900, volume: 1100, side: 'short' },
+    { time: '12:00', price: 43200, volume: 2200, side: 'long' },
+    { time: '14:00', price: 43000, volume: 1600, side: 'short' },
+    { time: '16:00', price: 42800, volume: 1900, side: 'long' },
+    { time: '18:00', price: 42900, volume: 1400, side: 'short' },
+    { time: '20:00', price: 43500, volume: 2100, side: 'long' },
+    { time: '22:00', price: 43300, volume: 1800, side: 'short' },
+    { time: '24:00', price: 44000, volume: 2500, side: 'long' },
   ];
 
-  const priceChange = mockPriceData[mockPriceData.length - 1].price - mockPriceData[0].price;
-  const priceChangePercent = (priceChange / mockPriceData[0].price) * 100;
+  // Filter data based on groupBy selection
+  const filteredPriceData = useMemo(() => {
+    if (groupBy === 'none') return mockPriceData;
+    return mockPriceData.filter(d => d.side === groupBy);
+  }, [mockPriceData, groupBy]);
+
+  // Calculate price change with empty data check
+  const priceChange = filteredPriceData.length > 1 
+    ? filteredPriceData[filteredPriceData.length - 1].price - filteredPriceData[0].price 
+    : 0;
+  const priceChangePercent = filteredPriceData.length > 1 && filteredPriceData[0].price > 0
+    ? (priceChange / filteredPriceData[0].price) * 100
+    : 0;
 
   // Chart data
   const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
     return {
-      labels: mockPriceData.map((d) => d.time),
+      labels: filteredPriceData.map((d) => d.time),
       datasets: [
         {
           type: 'line' as const,
           label: 'Price',
-          data: mockPriceData.map((d) => d.price),
-          borderColor: '#3b82f6',
+          data: filteredPriceData.map((d) => d.price),
+          borderColor: groupBy === 'long' ? '#10b981' : groupBy === 'short' ? '#ef4444' : '#3b82f6',
           backgroundColor: 'transparent',
           borderWidth: 2,
           pointRadius: 0,
@@ -98,14 +116,14 @@ export function Prices() {
         {
           type: 'bar' as const,
           label: 'Volume',
-          data: mockPriceData.map((d) => d.volume),
-          backgroundColor: '#10b981',
+          data: filteredPriceData.map((d) => d.volume),
+          backgroundColor: groupBy === 'long' ? '#10b981' : groupBy === 'short' ? '#ef4444' : '#10b981',
           borderRadius: 4,
           yAxisID: 'y1',
         },
       ],
     };
-  }, []);
+  }, [filteredPriceData, groupBy]);
 
   const chartOptions: ChartOptions<'bar' | 'line'> = {
     responsive: true,
@@ -262,6 +280,19 @@ export function Prices() {
             </select>
           </div>
 
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium">Group By</label>
+            <select
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value as 'none' | 'long' | 'short')}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="none">All</option>
+              <option value="long">Long Only</option>
+              <option value="short">Short Only</option>
+            </select>
+          </div>
+
           <div className="flex items-end">
             <button className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
               <RefreshCw className="h-4 w-4" />
@@ -276,7 +307,7 @@ export function Prices() {
         <Card>
           <CardContent className="p-6">
             <p className="text-sm text-muted-foreground">Current Price</p>
-            <p className="text-3xl font-bold">${mockPriceData[mockPriceData.length - 1].price.toLocaleString()}</p>
+            <p className="text-3xl font-bold">${filteredPriceData.length > 0 ? filteredPriceData[filteredPriceData.length - 1].price.toLocaleString() : '0'}</p>
             <div className={clsx(
               'mt-2 flex items-center gap-1 text-sm',
               priceChange >= 0 ? 'text-green-500' : 'text-red-500'
@@ -290,7 +321,7 @@ export function Prices() {
         <Card>
           <CardContent className="p-6">
             <p className="text-sm text-muted-foreground">24h Volume</p>
-            <p className="text-3xl font-bold">{(mockPriceData.reduce((acc, d) => acc + d.volume, 0)).toLocaleString()}</p>
+            <p className="text-3xl font- bold">{(filteredPriceData.reduce((acc, d) => acc + d.volume, 0)).toLocaleString()}</p>
           </CardContent>
         </Card>
 
@@ -307,7 +338,10 @@ export function Prices() {
 
       {/* Price Chart */}
       <Card>
-        <CardHeader title={`${selectedSymbol} Price Chart`} description={`${selectedExchange.toUpperCase()} - ${timeInterval}`} />
+        <CardHeader 
+          title={`${selectedSymbol} Price Chart`} 
+          description={`${selectedExchange.toUpperCase()} - ${timeInterval}${groupBy !== 'none' ? ` - ${groupBy.toUpperCase()} only` : ''}`} 
+        />
         <CardContent>
           <div className="h-[400px] w-full">
             <Chart type="bar" data={chartData} options={chartOptions} />

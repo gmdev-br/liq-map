@@ -61,9 +61,10 @@ interface HistoricalLiquidation {
 interface LiquidationChartProps {
     data: HistoricalLiquidation[];
     formatCurrency: (value: number) => string;
+    groupBy?: 'none' | 'long' | 'short' | 'combined';
 }
 
-function LiquidationChart({ data, formatCurrency }: LiquidationChartProps) {
+function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: LiquidationChartProps) {
     const chartRef = useRef<any>(null);
     
     const resetZoom = () => {
@@ -186,6 +187,7 @@ function LiquidationChart({ data, formatCurrency }: LiquidationChartProps) {
         },
         scales: {
             x: {
+                stacked: groupBy === 'combined',
                 grid: {
                     color: 'hsl(var(--muted) / 0.3)',
                 },
@@ -199,6 +201,7 @@ function LiquidationChart({ data, formatCurrency }: LiquidationChartProps) {
                 },
             },
             y: {
+                stacked: groupBy === 'combined',
                 grid: {
                     color: 'hsl(var(--muted) / 0.3)',
                 },
@@ -236,6 +239,7 @@ export function LiquidationTest() {
     const [amountMin, setAmountMin] = useState<string>('');
     const [amountMax, setAmountMax] = useState<string>('');
     const [side, setSide] = useState<'all' | 'long' | 'short'>('all');
+    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined'>('none');
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
@@ -497,6 +501,19 @@ export function LiquidationTest() {
         setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
     }, [data, priceInterval, side, amountMin, amountMax]);
 
+    // Filter data for chart display based on groupBy selection
+    const chartData = useMemo(() => {
+        if (groupBy === 'none' || groupBy === 'combined') {
+            return processedData;
+        }
+        return processedData.map(item => ({
+            ...item,
+            long_volume: groupBy === 'long' ? item.long_volume : 0,
+            short_volume: groupBy === 'short' ? item.short_volume : 0,
+            total_volume: groupBy === 'long' ? item.long_volume : groupBy === 'short' ? item.short_volume : item.total_volume
+        }));
+    }, [processedData, groupBy]);
+
     const stats = {
         totalRecords: processedData.length,
         totalVolume: processedData.reduce((sum, item) => sum + item.total_volume, 0),
@@ -675,6 +692,19 @@ export function LiquidationTest() {
                             </div>
                         </div>
                         <div className="space-y-2">
+                            <label className="text-sm font-medium">Agrupar Por</label>
+                            <select
+                                value={groupBy}
+                                onChange={(e) => setGroupBy(e.target.value as 'none' | 'long' | 'short' | 'combined')}
+                                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                            >
+                                <option value="none">Todos (Long + Short)</option>
+                                <option value="long">Apenas Long</option>
+                                <option value="short">Apenas Short</option>
+                                <option value="combined">Combinado (Empilhado)</option>
+                            </select>
+                        </div>
+                        <div className="space-y-2">
                             <label className="text-sm font-medium">Intervalo de Agrupamento ($)</label>
                             <input
                                 type="number"
@@ -684,15 +714,6 @@ export function LiquidationTest() {
                                 className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
                             />
                             <p className="text-[10px] text-muted-foreground">Útil para ver volumes por faixas de preço específicas</p>
-                        </div>
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium">Chave API (Coinalyze)</label>
-                            <input
-                                type="password"
-                                value={apiKey}
-                                onChange={(e) => setApiKey(e.target.value)}
-                                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring opacity-50 focus:opacity-100 transition-opacity"
-                            />
                         </div>
                     </div>
                 </CardContent>
@@ -712,7 +733,7 @@ export function LiquidationTest() {
                     <Card>
                         <CardHeader title="Volume de Liquidação por Preço" description="Distribuição de Longs vs Shorts" />
                         <CardContent className="h-[400px]">
-                            <LiquidationChart data={processedData} formatCurrency={formatCurrency} />
+                            <LiquidationChart data={chartData} formatCurrency={formatCurrency} groupBy={groupBy} />
                         </CardContent>
                     </Card>
 
