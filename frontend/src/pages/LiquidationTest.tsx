@@ -678,6 +678,10 @@ export function LiquidationTest() {
                                 <option value={3}>3 Meses</option>
                                 <option value={6}>6 Meses</option>
                                 <option value={12}>12 Meses</option>
+                                <option value={24}>2 Anos</option>
+                                <option value={36}>3 Anos</option>
+                                <option value={48}>4 Anos</option>
+                                <option value={120}>10 Anos</option>
                                 <option value={0}>Máximo Disponível</option>
                             </select>
                         </div>

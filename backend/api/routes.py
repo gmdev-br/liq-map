@@ -850,71 +850,139 @@ async def compat_price_history(
     binance_symbol = symbol_map.get(symbols, "BTCUSDT")
     days_range = (to_time - from_time) / (24 * 60 * 60)
     
-    # Tenta Binance
-    try:
-        binance_url = "https://api.binance.com/api/v3/klines"
-        params = {
-            "symbol": binance_symbol,
-            "interval": "1d",
-            "startTime": from_time * 1000,
-            "endTime": to_time * 1000,
-            "limit": 1000
+    # Função para buscar dados da Binance
+    def get_binance_data():
+        try:
+            binance_url = "https://api.binance.com/api/v3/klines"
+            params = {
+                "symbol": binance_symbol,
+                "interval": "1d",
+                "startTime": from_time * 1000,
+                "endTime": to_time * 1000,
+                "limit": 1000
+            }
+            
+            response = requests.get(binance_url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if isinstance(data, list) and len(data) > 0:
+                    formatted_data = {}
+                    for item in data:
+                        ts = item[0] // 1000
+                        date_key = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+                        formatted_data[date_key] = item[4]
+                    return formatted_data
+        except Exception:
+            pass
+        return None
+    
+    # Função para buscar dados do CoinGecko
+    def get_coingecko_data():
+        coin_map = {
+            "BTCUSDT_PERP.A": "bitcoin",
+            "ETHUSDT_PERP.A": "ethereum",
+            "SOLUSDT_PERP.A": "solana",
+            "XRPUSDT_PERP.A": "ripple",
+            "ADAUSDT_PERP.A": "cardano"
         }
         
-        response = requests.get(binance_url, params=params, timeout=30)
+        coin_id = coin_map.get(symbols, "bitcoin")
+        coingecko_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
         
-        if response.status_code == 200:
-            data = response.json()
+        try:
+            params = {
+                "vs_currency": "usd",
+                "from": from_time,
+                "to": to_time
+            }
             
-            if isinstance(data, list) and len(data) > 0:
-                formatted_data = []
-                for item in data:
-                    formatted_data.append({
-                        "t": item[0] // 1000,
-                        "c": item[4]
-                    })
-                
-                cache.set(cache_key, formatted_data, ttl=300)
-                return formatted_data
-    except Exception:
-        pass
-    
-    # Fallback CoinGecko
-    coin_map = {
-        "BTCUSDT_PERP.A": "bitcoin",
-        "ETHUSDT_PERP.A": "ethereum",
-        "SOLUSDT_PERP.A": "solana",
-        "XRPUSDT_PERP.A": "ripple",
-        "ADAUSDT_PERP.A": "cardano"
-    }
-    
-    coin_id = coin_map.get(symbols, "bitcoin")
-    coingecko_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
-    
-    try:
-        params = {
-            "vs_currency": "usd",
-            "from": from_time,
-            "to": to_time
-        }
-        
-        response = requests.get(coingecko_url, params=params, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
+            response = requests.get(coingecko_url, params=params, timeout=30)
             
-            if "prices" in data:
-                formatted_data = []
-                for price_point in data["prices"]:
-                    formatted_data.append({
-                        "t": price_point[0] // 1000,
-                        "c": price_point[1]
-                    })
+            if response.status_code == 200:
+                data = response.json()
                 
-                cache.set(cache_key, formatted_data, ttl=300)
-                return formatted_data
-    except Exception:
-        pass
+                if "prices" in data:
+                    formatted_data = {}
+                    for price_point in data["prices"]:
+                        ts = price_point[0] // 1000
+                        date_key = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+                        formatted_data[date_key] = price_point[1]
+                    return formatted_data
+        except Exception:
+            pass
+        return None
+    
+    # Para períodos maiores que 2 anos, busca de ambas as fontes e mescla
+    if days_range > 730:
+        # Busca dados recentes da Binance (últimos 1000 dias)
+        recent_binance_data = {}
+        try:
+            # Busca apenas os dados mais recentes da Binance
+            binance_url = "https://api.binance.com/api/v3/klines"
+            recent_start = (to_time - (1000 * 24 * 60 * 60)) * 1000  # 1000 dias atrás
+            params = {
+                "symbol": binance_symbol,
+                "interval": "1d",
+                "startTime": recent_start,
+                "endTime": to_time * 1000,
+                "limit": 1000
+            }
+            
+            response = requests.get(binance_url, params=params, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    for item in data:
+                        ts = item[0] // 1000
+                        date_key = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+                        recent_binance_data[date_key] = item[4]
+        except Exception:
+            pass
+        
+        # Busca dados históricos do CoinGecko (para preencher períodos antigos)
+        coingecko_data = get_coingecko_data()
+        
+        # Mescla os dados
+        merged_data = {}
+        
+        if coingecko_data:
+            merged_data.update(coingecko_data)
+        
+        # Binance sobrescreve CoinGecko para os dias recentes
+        merged_data.update(recent_binance_data)
+        
+        if merged_data:
+            formatted_data = []
+            for date_key, price in sorted(merged_data.items()):
+                ts = int(datetime.strptime(date_key, '%Y-%m-%d').timestamp())
+                formatted_data.append({"t": ts, "c": price})
+            
+            cache.set(cache_key, formatted_data, ttl=300)
+            return formatted_data
+    else:
+        # Para períodos menores, usa Binance primeiro
+        binance_data = get_binance_data()
+        if binance_data:
+            formatted_data = []
+            for date_key, price in sorted(binance_data.items()):
+                ts = int(datetime.strptime(date_key, '%Y-%m-%d').timestamp())
+                formatted_data.append({"t": ts, "c": price})
+            
+            cache.set(cache_key, formatted_data, ttl=300)
+            return formatted_data
+        
+        # Fallback para CoinGecko
+        coingecko_data = get_coingecko_data()
+        if coingecko_data:
+            formatted_data = []
+            for date_key, price in sorted(coingecko_data.items()):
+                ts = int(datetime.strptime(date_key, '%Y-%m-%d').timestamp())
+                formatted_data.append({"t": ts, "c": price})
+            
+            cache.set(cache_key, formatted_data, ttl=300)
+            return formatted_data
     
     return []
 @compat_router.get("/api/debug-liquidation")
