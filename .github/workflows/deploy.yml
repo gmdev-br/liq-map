@@ -31,7 +31,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
         working-directory: frontend
 
       - name: Build
@@ -39,6 +39,12 @@ jobs:
         working-directory: frontend
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      - name: Create .nojekyll (Avoid GH Pages ignoring assets)
+        run: touch frontend/dist/.nojekyll
+
+      - name: List files (Debug)
+        run: ls -R frontend/dist
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
