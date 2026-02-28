@@ -233,6 +233,8 @@ export function LiquidationTest() {
     const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'none');
     const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '');
     const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '');
+    const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '');
+    const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '');
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
@@ -278,6 +280,14 @@ export function LiquidationTest() {
     useEffect(() => {
         localStorage.setItem('liquidation_test_ratio_filter_max', ratioFilterMax);
     }, [ratioFilterMax]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_price_range_min', priceRangeMin);
+    }, [priceRangeMin]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_price_range_max', priceRangeMax);
+    }, [priceRangeMax]);
 
     const handleExportCSV = () => {
         if (processedData.length === 0) {
@@ -546,18 +556,30 @@ export function LiquidationTest() {
         setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
     }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax]);
 
-    // Filter data for chart display based on groupBy selection
+    // Filter data for chart display based on groupBy selection and price range
     const chartData = useMemo(() => {
-        if (groupBy === 'none' || groupBy === 'combined' || groupBy === 'stacked') {
-            return processedData;
+        let filteredData = processedData;
+        
+        // Apply price range filter if both min and max are provided
+        const minPrice = priceRangeMin && !isNaN(parseFloat(priceRangeMin)) ? parseFloat(priceRangeMin) : null;
+        const maxPrice = priceRangeMax && !isNaN(parseFloat(priceRangeMax)) ? parseFloat(priceRangeMax) : null;
+        
+        if (minPrice !== null && maxPrice !== null) {
+            const actualMin = Math.min(minPrice, maxPrice);
+            const actualMax = Math.max(minPrice, maxPrice);
+            filteredData = filteredData.filter(item => item.price >= actualMin && item.price <= actualMax);
         }
-        return processedData.map(item => ({
+        
+        if (groupBy === 'none' || groupBy === 'combined' || groupBy === 'stacked') {
+            return filteredData;
+        }
+        return filteredData.map(item => ({
             ...item,
             long_volume: groupBy === 'long' ? item.long_volume : 0,
             short_volume: groupBy === 'short' ? item.short_volume : 0,
             total_volume: groupBy === 'long' ? item.long_volume : groupBy === 'short' ? item.short_volume : item.total_volume
         }));
-    }, [processedData, groupBy]);
+    }, [processedData, groupBy, priceRangeMin, priceRangeMax]);
 
     const stats = {
         totalRecords: processedData.length,
@@ -784,6 +806,26 @@ export function LiquidationTest() {
                                 />
                             </div>
                             <p className="text-[10px] text-muted-foreground">Filtrar por faixa de taxa Long/Short</p>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Faixa de Preço (Min - Max)</label>
+                            <div className="flex gap-2">
+                                <input
+                                    type="number"
+                                    value={priceRangeMin}
+                                    onChange={(e) => setPriceRangeMin(e.target.value)}
+                                    placeholder="Mínimo"
+                                    className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                />
+                                <input
+                                    type="number"
+                                    value={priceRangeMax}
+                                    onChange={(e) => setPriceRangeMax(e.target.value)}
+                                    placeholder="Máximo"
+                                    className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                />
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">Definir escala do eixo X do gráfico</p>
                         </div>
                     </div>
                 </CardContent>
