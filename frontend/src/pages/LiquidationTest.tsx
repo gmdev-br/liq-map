@@ -60,11 +60,13 @@ interface LiquidationChartProps {
     data: HistoricalLiquidation[];
     formatCurrency: (value: number) => string;
     groupBy?: 'none' | 'long' | 'short' | 'combined' | 'stacked';
+    currentPrice?: number | null;
+    priceInterval: number;
 }
 
-function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: LiquidationChartProps) {
+function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval }: LiquidationChartProps) {
     const chartRef = useRef<any>(null);
-    
+
     const resetZoom = () => {
         if (chartRef.current) {
             chartRef.current.resetZoom();
@@ -77,7 +79,7 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
     // Create chart data based on groupBy selection
     const chartData: ChartData<'bar'> = {
         labels: sortedData.map((d) => formatCurrency(d.price)),
-        datasets: groupBy === 'stacked' 
+        datasets: groupBy === 'stacked'
             ? [{
                 label: 'Total Volume',
                 data: sortedData.map((d) => d.long_volume + d.short_volume),
@@ -134,6 +136,13 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
                         const idx = items[0].dataIndex;
                         const item = sortedData[idx];
                         if (!item) return '';
+
+                        // Se houver intervalo de preço, o timestamp não é uma data real (é o preço base da faixa)
+                        // Portanto, não mostramos a data "01/01/1970"
+                        if (priceInterval > 0) {
+                            return `Price Range: ${formatCurrency(item.timestamp)} - ${formatCurrency(item.timestamp + priceInterval)}`;
+                        }
+
                         const date = new Date(item.timestamp * 1000);
                         const dateStr = date.toLocaleDateString('pt-BR');
                         return `Price: ${formatCurrency(item.price)} | ${dateStr}`;
@@ -207,9 +216,119 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
         },
     };
 
+    // Custom plugin to draw the current price vertical line
+    const currentPricePlugin = {
+        id: 'currentPriceLine',
+        afterDraw: (chart: any) => {
+            if (!currentPrice || sortedData.length === 0) return;
+
+            const { ctx, chartArea: { top, bottom, left, right } } = chart;
+            const meta = chart.getDatasetMeta(0);
+
+            if (!meta || !meta.data || meta.data.length === 0) return;
+
+            // Find price range covered by our data
+            const minPrice = sortedData[0].price;
+            const maxPrice = sortedData[sortedData.length - 1].price;
+
+            // Only draw if price is within current chart range
+            if (currentPrice < minPrice || currentPrice > maxPrice) return;
+
+            // Find the index that corresponds to currentPrice
+            let lowerIdx = 0;
+            for (let i = 0; i < sortedData.length - 1; i++) {
+                if (sortedData[i + 1].price > currentPrice) {
+                    lowerIdx = i;
+                    break;
+                }
+                lowerIdx = i;
+            }
+
+            const upperIdx = Math.min(lowerIdx + 1, sortedData.length - 1);
+
+            // Fix for undefined meta data when chart has less data rendered than sortedData
+            if (!meta.data[lowerIdx] || !meta.data[upperIdx]) return;
+
+            // Get pixels directly from the actual rendered bars center points
+            const x1 = meta.data[lowerIdx].x;
+            const x2 = meta.data[upperIdx].x;
+            const p1 = sortedData[lowerIdx].price;
+            const p2 = sortedData[upperIdx].price;
+
+            let xPos;
+            if (p1 === p2 || x1 === x2) {
+                xPos = x1;
+            } else {
+                // Precise linear interpolation for pixel position between category centers
+                xPos = x1 + (x2 - x1) * (currentPrice - p1) / (p2 - p1);
+            }
+
+            if (xPos !== null && xPos >= left && xPos <= right) {
+                ctx.save();
+
+                // Draw vertical line
+                ctx.beginPath();
+                ctx.setLineDash([5, 5]);
+                ctx.moveTo(xPos, top);
+                ctx.lineTo(xPos, bottom);
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = '#ef4444';
+                ctx.stroke();
+
+                // Draw label at the top
+                const label = `Current Price: ${formatCurrency(currentPrice)}`;
+                ctx.font = 'bold 12px sans-serif';
+                const textMetrics = ctx.measureText(label);
+                const padding = 6;
+                const rectWidth = textMetrics.width + padding * 2;
+                const rectHeight = 20;
+
+                ctx.setLineDash([]);
+                ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
+                const labelX = Math.min(Math.max(xPos - rectWidth / 2, left), right - rectWidth);
+                ctx.beginPath();
+                ctx.roundRect(labelX, top - 25, rectWidth, rectHeight, 4);
+                ctx.fill();
+
+                ctx.fillStyle = '#ffffff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, labelX + rectWidth / 2, top - 25 + rectHeight / 2);
+
+                // Draw pointer at top
+                ctx.beginPath();
+                ctx.moveTo(xPos, top - 5);
+                ctx.lineTo(xPos - 5, top - 12);
+                ctx.lineTo(xPos + 5, top - 12);
+                ctx.closePath();
+                ctx.fillStyle = '#ef4444';
+                ctx.fill();
+
+                // Draw label below X-axis
+                const priceLabel = formatCurrency(currentPrice);
+                ctx.font = 'bold 11px sans-serif';
+                const pMetrics = ctx.measureText(priceLabel);
+                const pWidth = pMetrics.width + 8;
+                const pHeight = 18;
+                const pY = bottom + 8;
+
+                ctx.fillStyle = '#ef4444';
+                const pX = Math.min(Math.max(xPos - pWidth / 2, left), right - pWidth);
+                ctx.beginPath();
+                ctx.roundRect(pX, pY, pWidth, pHeight, 2);
+                ctx.fill();
+
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(priceLabel, pX + pWidth / 2, pY + pHeight / 2);
+
+                ctx.restore();
+            }
+        }
+    };
+
     return (
         <div className="relative w-full h-full">
-            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions} />
+            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions} plugins={[currentPricePlugin]} />
             <button
                 onClick={resetZoom}
                 className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 text-xs bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 rounded-md border border-slate-600 transition-colors"
@@ -235,9 +354,11 @@ export function LiquidationTest() {
     const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '');
     const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '');
     const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '');
+    const [priceRefreshInterval, setPriceRefreshInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_refresh')) || 30);
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
+    const [currentPrice, setCurrentPrice] = useState<number | null>(null);
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -289,6 +410,10 @@ export function LiquidationTest() {
         localStorage.setItem('liquidation_test_price_range_max', priceRangeMax);
     }, [priceRangeMax]);
 
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_price_refresh', String(priceRefreshInterval));
+    }, [priceRefreshInterval]);
+
     const handleExportCSV = () => {
         if (processedData.length === 0) {
             setStatus({ message: 'Nenhum dado para exportar', type: 'error' });
@@ -337,7 +462,7 @@ export function LiquidationTest() {
 
         try {
             setStatus({ message: 'Importando dados...', type: 'loading' });
-            
+
             let importedData: any[];
             if (file.name.endsWith('.json')) {
                 importedData = await importFromJSON(file);
@@ -460,6 +585,38 @@ export function LiquidationTest() {
         })).sort((a, b) => a.price - b.price);
     };
 
+    // Function to fetch ONLY the current price without reloading history
+    const updateCurrentPrice = async () => {
+        if (!symbol) return;
+        try {
+            const end = Math.floor(Date.now() / 1000);
+            const start = end - (24 * 60 * 60); // 1 day window is enough for current price
+
+            const priceResponse = await axios.get('/api/price-history', {
+                params: {
+                    symbols: symbol,
+                    from: start,
+                    to: end
+                }
+            });
+
+            const priceData = Array.isArray(priceResponse.data) ? priceResponse.data : [];
+            if (priceData.length > 0) {
+                setCurrentPrice(Number(priceData[priceData.length - 1].c || 0));
+            }
+        } catch (error) {
+            console.error('Error auto-updating price:', error);
+        }
+    };
+
+    // Auto-update price effect
+    useEffect(() => {
+        if (priceRefreshInterval <= 0) return;
+
+        const intervalId = setInterval(updateCurrentPrice, priceRefreshInterval * 1000);
+        return () => clearInterval(intervalId);
+    }, [symbol, priceRefreshInterval]);
+
     const fetchLiquidationData = async () => {
         setStatus({ message: 'Fetching liquidation data...', type: 'loading' });
 
@@ -551,9 +708,15 @@ export function LiquidationTest() {
             }, []);
 
             setData(mapped);
+
+            // Set current price from the last price data entry
+            if (priceData.length > 0) {
+                setCurrentPrice(Number(priceData[priceData.length - 1].c || 0));
+            }
+
             setLastFetchTime(Date.now());
             setStatus({
-                message: isFromCache 
+                message: isFromCache
                     ? `Dados carregados do cache (${mapped.length} registros). Última atualização: ${new Date(lastFetchTime || Date.now()).toLocaleString('pt-BR')}`
                     : `Dados carregados (${rawHistory.length} registros).`,
                 type: 'success'
@@ -571,12 +734,12 @@ export function LiquidationTest() {
         const max = amountMax && !isNaN(parseFloat(amountMax)) ? parseFloat(amountMax) : Infinity;
         const ratioMin = ratioFilter && !isNaN(parseFloat(ratioFilter)) ? parseFloat(ratioFilter) : null;
         const ratioMax = ratioFilterMax && !isNaN(parseFloat(ratioFilterMax)) ? parseFloat(ratioFilterMax) : null;
-        
+
         // First filter by min/max amount
-        let amountFiltered = data.filter(item => 
+        let amountFiltered = data.filter(item =>
             item.total_volume >= min && (max === Infinity || item.total_volume <= max)
         );
-        
+
         // Then filter by ratio if specified
         if (ratioMin !== null || ratioMax !== null) {
             amountFiltered = amountFiltered.filter(item => {
@@ -586,24 +749,24 @@ export function LiquidationTest() {
                 return true;
             });
         }
-        
+
         setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
     }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax]);
 
     // Filter data for chart display based on groupBy selection and price range
     const chartData = useMemo(() => {
         let filteredData = processedData;
-        
+
         // Apply price range filter if both min and max are provided
         const minPrice = priceRangeMin && !isNaN(parseFloat(priceRangeMin)) ? parseFloat(priceRangeMin) : null;
         const maxPrice = priceRangeMax && !isNaN(parseFloat(priceRangeMax)) ? parseFloat(priceRangeMax) : null;
-        
+
         if (minPrice !== null && maxPrice !== null) {
             const actualMin = Math.min(minPrice, maxPrice);
             const actualMax = Math.max(minPrice, maxPrice);
             filteredData = filteredData.filter(item => item.price >= actualMin && item.price <= actualMax);
         }
-        
+
         if (groupBy === 'none' || groupBy === 'combined' || groupBy === 'stacked') {
             return filteredData;
         }
@@ -776,6 +939,17 @@ export function LiquidationTest() {
                                 className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
                             />
                         </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Atualizar Preço (segundos)</label>
+                            <input
+                                type="number"
+                                value={priceRefreshInterval}
+                                onChange={(e) => setPriceRefreshInterval(Number(e.target.value))}
+                                placeholder="30"
+                                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                            />
+                            <p className="text-[10px] text-muted-foreground">Tempo para atualizar a linha vermelha (0 para parar)</p>
+                        </div>
                     </div>
 
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 pt-2 border-t border-border">
@@ -879,7 +1053,13 @@ export function LiquidationTest() {
                     <Card>
                         <CardHeader title="Volume de Liquidação por Preço" description="Distribuição de Longs vs Shorts" />
                         <CardContent className="h-[400px]">
-                            <LiquidationChart data={chartData} formatCurrency={formatCurrency} groupBy={groupBy} />
+                            <LiquidationChart
+                                data={chartData}
+                                formatCurrency={formatCurrency}
+                                groupBy={groupBy}
+                                currentPrice={currentPrice}
+                                priceInterval={priceInterval}
+                            />
                         </CardContent>
                     </Card>
 
