@@ -32,7 +32,6 @@ import {
     ChartOptions,
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
-import crosshairPlugin from 'chartjs-plugin-crosshair';
 import { Chart } from 'react-chartjs-2';
 
 // Register Chart.js components
@@ -44,8 +43,7 @@ ChartJS.register(
     Title,
     ChartTooltip,
     ChartLegend,
-    zoomPlugin,
-    crosshairPlugin
+    zoomPlugin
 );
 
 interface HistoricalLiquidation {
@@ -128,13 +126,6 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
                 borderWidth: 1,
                 padding: 12,
                 cornerRadius: 8,
-                titleFont: {
-                    size: 13,
-                    weight: 'bold',
-                },
-                bodyFont: {
-                    size: 12,
-                },
                 displayColors: true,
                 boxPadding: 4,
                 callbacks: {
@@ -164,22 +155,6 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
                         const ratio = item.long_short_ratio;
                         return [`  ─────────────`, `  Total: ${formatCurrency(total)}`, `  L/S Ratio: ${ratio.toFixed(2)}`];
                     },
-                },
-            },
-            crosshair: {
-                enabled: true,
-                mode: 'index',
-                intersect: false,
-                line: {
-                    color: '#64748b',
-                    width: 1,
-                    dash: [],
-                },
-                sync: {
-                    enabled: false,
-                },
-                zoom: {
-                    enabled: true,
                 },
             },
             zoom: {
