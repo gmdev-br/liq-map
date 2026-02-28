@@ -441,8 +441,8 @@ export function LiquidationTest() {
                 rawHistory = resData.data;
             }
 
-            const min = amountMin && !isNaN(parseFloat(amountMin)) ? parseFloat(amountMin) : 0;
-            const max = amountMax && !isNaN(parseFloat(amountMax)) ? parseFloat(amountMax) : Infinity;
+            const min = 0;
+            const max = Infinity;
 
             const mapped: HistoricalLiquidation[] = rawHistory.reduce((acc: HistoricalLiquidation[], item: any) => {
                 const longBase = item.l || item.long_volume || 0;
@@ -474,7 +474,7 @@ export function LiquidationTest() {
             setStatus({
                 message: isFromCache 
                     ? `Dados carregados do cache (${mapped.length} registros). Última atualização: ${new Date(lastFetchTime || Date.now()).toLocaleString('pt-BR')}`
-                    : `Dados atualizados (${rawHistory.length} registros). Filtrados para ${mapped.length}.`,
+                    : `Dados carregados (${rawHistory.length} registros).`,
                 type: 'success'
             });
         },
@@ -486,8 +486,16 @@ export function LiquidationTest() {
     });
 
     useEffect(() => {
-        setProcessedData(aggregateByPriceInterval(data, priceInterval));
-    }, [data, priceInterval, side]);
+        const min = amountMin && !isNaN(parseFloat(amountMin)) ? parseFloat(amountMin) : 0;
+        const max = amountMax && !isNaN(parseFloat(amountMax)) ? parseFloat(amountMax) : Infinity;
+        
+        // First filter by min/max amount
+        const amountFiltered = data.filter(item => 
+            item.total_volume >= min && (max === Infinity || item.total_volume <= max)
+        );
+        
+        setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
+    }, [data, priceInterval, side, amountMin, amountMax]);
 
     const stats = {
         totalRecords: processedData.length,
