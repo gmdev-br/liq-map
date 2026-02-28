@@ -248,21 +248,61 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none' }: Liquidatio
 }
 
 export function LiquidationTest() {
-    const [apiKey, setApiKey] = useState(localStorage.getItem('coinalyze_api_key') || 'FREE');
-    const [symbol, setSymbol] = useState('BTCUSDT_PERP.A');
-    const [months, setMonths] = useState(12);
-    const [priceInterval, setPriceInterval] = useState(0);
-    const [amountMin, setAmountMin] = useState<string>('');
-    const [amountMax, setAmountMax] = useState<string>('');
-    const [side, setSide] = useState<'all' | 'long' | 'short'>('all');
-    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>('none');
-    const [ratioFilter, setRatioFilter] = useState<string>('');
-    const [ratioFilterMax, setRatioFilterMax] = useState<string>('');
+    const [apiKey, setApiKey] = useState(() => localStorage.getItem('coinalyze_api_key') || 'FREE');
+    const [symbol, setSymbol] = useState(() => localStorage.getItem('liquidation_test_symbol') || 'BTCUSDT_PERP.A');
+    const [months, setMonths] = useState(() => Number(localStorage.getItem('liquidation_test_months')) || 12);
+    const [priceInterval, setPriceInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_interval')) || 0);
+    const [amountMin, setAmountMin] = useState<string>(() => localStorage.getItem('liquidation_test_amount_min') || '');
+    const [amountMax, setAmountMax] = useState<string>(() => localStorage.getItem('liquidation_test_amount_max') || '');
+    const [side, setSide] = useState<'all' | 'long' | 'short'>(() => (localStorage.getItem('liquidation_test_side') as 'all' | 'long' | 'short') || 'all');
+    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'none');
+    const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '');
+    const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '');
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        localStorage.setItem('coinalyze_api_key', apiKey);
+    }, [apiKey]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_symbol', symbol);
+    }, [symbol]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_months', String(months));
+    }, [months]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_price_interval', String(priceInterval));
+    }, [priceInterval]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_amount_min', amountMin);
+    }, [amountMin]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_amount_max', amountMax);
+    }, [amountMax]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_side', side);
+    }, [side]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_group_by', groupBy);
+    }, [groupBy]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_ratio_filter', ratioFilter);
+    }, [ratioFilter]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_ratio_filter_max', ratioFilterMax);
+    }, [ratioFilterMax]);
 
     const handleExportCSV = () => {
         if (processedData.length === 0) {
