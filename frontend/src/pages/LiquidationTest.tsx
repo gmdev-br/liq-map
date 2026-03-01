@@ -85,6 +85,71 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
     // Sort data by price for proper x-axis ordering - memoized to prevent unnecessary re-renders
     const sortedData = useMemo(() => [...data].sort((a, b) => a.price - b.price), [data]);
 
+    // Memoize vertical lines at multiples of 1000 - only recalculates when sortedData changes
+    // NOT when currentPrice changes, avoiding unnecessary re-renders
+    // OPTIMIZATION: Uses a single dataset with segments instead of multiple datasets
+    const verticalLinesDataset = useMemo(() => {
+        if (sortedData.length === 0) return null;
+
+        const maxVolume = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
+        const yMax = maxVolume * 1.1;
+
+        // Get the price range of the displayed data
+        const minDataPrice = sortedData[0].price;
+        const maxDataPrice = sortedData[sortedData.length - 1].price;
+
+        // Calculate multiples of 1000 within the data range
+        const firstMultiple = Math.ceil(minDataPrice / 1000) * 1000;
+        const lastMultiple = Math.floor(maxDataPrice / 1000) * 1000;
+
+        // Create labels array for lookup (same as used in the chart)
+        const priceLabels = sortedData.map(d => formatCurrency(d.price));
+
+        // Build a single dataset with all vertical line segments
+        // Using null values to create gaps between lines (spanGaps: false)
+        const lineData: any[] = [];
+
+        // Add vertical line for each multiple of 1000
+        for (let multiple = firstMultiple; multiple <= lastMultiple; multiple += 1000) {
+            // Find the data point closest to this price multiple
+            const prices = sortedData.map(d => d.price);
+            const closestIndex = prices.reduce((closestIdx, price, idx) => {
+                return Math.abs(price - multiple) < Math.abs(prices[closestIdx] - multiple) ? idx : closestIdx;
+            }, 0);
+
+            // Use the formatted label string as x value for category scale
+            const closestLabel = priceLabels[closestIndex];
+
+            // Add two points for the vertical line (bottom to top)
+            lineData.push(
+                { x: closestLabel, y: 0 },
+                { x: closestLabel, y: yMax }
+            );
+
+            // Add null to create a gap before the next line (unless it's the last one)
+            if (multiple + 1000 <= lastMultiple) {
+                lineData.push({ x: null, y: null });
+            }
+        }
+
+        // Return a single dataset with all vertical lines
+        return {
+            type: 'line' as const,
+            label: '',
+            data: lineData,
+            borderColor: '#64748b',
+            backgroundColor: 'transparent',
+            borderWidth: 1,
+            borderDash: [3, 3],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            yAxisID: 'y',
+            xAxisID: 'x',
+            order: 0,
+            spanGaps: false, // Important: creates separate segments for each vertical line
+        };
+    }, [sortedData, formatCurrency]);
+
     // Create chart data based on groupBy selection - memoized to preserve zoom state
     const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
         const labels = sortedData.map((d) => formatCurrency(d.price));
@@ -113,6 +178,12 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
                 },
             ];
 
+        // Add memoized vertical lines at multiples of 1000 (static, only changes when sortedData changes)
+        // OPTIMIZATION: Now a single dataset instead of multiple datasets
+        if (verticalLinesDataset) {
+            datasets.push(verticalLinesDataset);
+        }
+
         // Add vertical line at current price if we have a price value and data
         if (currentPrice && sortedData.length > 0) {
             const maxVolume = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
@@ -127,19 +198,25 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             const priceMargin = (maxDataPrice - minDataPrice) * 0.05;
 
             if (currentPrice >= minDataPrice - priceMargin && currentPrice <= maxDataPrice + priceMargin) {
+                // Create labels array for lookup (same as used in the chart)
+                const priceLabels = sortedData.map(d => formatCurrency(d.price));
+
                 // Find the index closest to current price for vertical line placement
                 const prices = sortedData.map(d => d.price);
                 const closestIndex = prices.reduce((closestIdx, price, idx) => {
                     return Math.abs(price - currentPrice) < Math.abs(prices[closestIdx] - currentPrice) ? idx : closestIdx;
                 }, 0);
 
-                // Create a vertical line using scatter with line at the current price index
+                // Use the formatted label string as x value for category scale
+                const closestLabel = priceLabels[closestIndex];
+
+                // Create a vertical line using scatter with line at the current price position
                 datasets.push({
                     type: 'scatter' as const,
                     label: '',
                     data: [
-                        { x: closestIndex, y: 0 },
-                        { x: closestIndex, y: yMax },
+                        { x: closestLabel, y: 0 },
+                        { x: closestLabel, y: yMax },
                     ],
                     borderColor: '#ef4444',
                     backgroundColor: 'transparent',
@@ -159,7 +236,7 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             labels,
             datasets,
         };
-    }, [sortedData, groupBy, formatCurrency, currentPrice]);
+    }, [sortedData, groupBy, formatCurrency, currentPrice, verticalLinesDataset]);
 
     // Memoize chart options to prevent zoom reset on re-renders
     const chartOptions: any = useMemo(() => ({

@@ -1,0 +1,22 @@
+[
+  {"timestamp":1704067200,"long_volume":1500000,"short_volume":800000,"total_volume":2300000,"long_short_ratio":1.88,"price":42000},
+  {"timestamp":1704153600,"long_volume":1200000,"short_volume":950000,"total_volume":2150000,"long_short_ratio":1.26,"price":42500},
+  {"timestamp":1704240000,"long_volume":1800000,"short_volume":700000,"total_volume":2500000,"long_short_ratio":2.57,"price":41800},
+  {"timestamp":1704326400,"long_volume":900000,"short_volume":1200000,"total_volume":2100000,"long_short_ratio":0.75,"price":43200},
+  {"timestamp":1704412800,"long_volume":2000000,"short_volume":600000,"total_volume":2600000,"long_short_ratio":3.33,"price":41500},
+  {"timestamp":1704499200,"long_volume":1100000,"short_volume":1100000,"total_volume":2200000,"long_short_ratio":1.00,"price":42800},
+  {"timestamp":1704585600,"long_volume":1600000,"short_volume":850000,"total_volume":2450000,"long_short_ratio":1.88,"price":42100},
+  {"timestamp":1704672000,"long_volume":1300000,"short_volume":1000000,"total_volume":2300000,"long_short_ratio":1.30,"price":42600},
+  {"timestamp":1704758400,"long_volume":1900000,"short_volume":550000,"total_volume":2450000,"long_short_ratio":3.45,"price":41200},
+  {"timestamp":1704844800,"long_volume":850000,"short_volume":1300000,"total_volume":2150000,"long_short_ratio":0.65,"price":43500},
+  {"timestamp":1704931200,"long_volume":1750000,"short_volume":750000,"total_volume":2500000,"long_short_ratio":2.33,"price":41900},
+  {"timestamp":1705017600,"long_volume":1050000,"short_volume":1150000,"total_volume":2200000,"long_short_ratio":0.91,"price":43000},
+  {"timestamp":1705104000,"long_volume":2200000,"short_volume":500000,"total_volume":2700000,"long_short_ratio":4.40,"price":40800},
+  {"timestamp":1705190400,"long_volume":950000,"short_volume":1250000,"total_volume":2200000,"long_short_ratio":0.76,"price":43800},
+  {"timestamp":1705276800,"long_volume":1850000,"short_volume":650000,"total_volume":2500000,"long_short_ratio":2.85,"price":41600},
+  {"timestamp":1705363200,"long_volume":1150000,"short_volume":1050000,"total_volume":2200000,"long_short_ratio":1.10,"price":42900},
+  {"timestamp":1705449600,"long_volume":2100000,"short_volume":450000,"total_volume":2550000,"long_short_ratio":4.67,"price":40500},
+  {"timestamp":1705536000,"long_volume":800000,"short_volume":1400000,"total_volume":2200000,"long_short_ratio":0.57,"price":44200},
+  {"timestamp":1705622400,"long_volume":1950000,"short_volume":600000,"total_volume":2550000,"long_short_ratio":3.25,"price":41400},
+  {"timestamp":1705708800,"long_volume":1000000,"short_volume":1200000,"total_volume":2200000,"long_short_ratio":0.83,"price":43400}
+]
