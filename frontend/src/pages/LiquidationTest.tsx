@@ -65,15 +65,43 @@ interface HistoricalLiquidation {
 }
 
 // Liquidation Chart Component
+// Line style configuration interface
+export interface LineStyleConfig {
+    color: string;
+    width: number;
+    dash?: number[];
+}
+
+// Chart line styles configuration
+export interface ChartLineStyles {
+    thousandLines: LineStyleConfig;
+    btcQuoteLine: LineStyleConfig;
+}
+
+// Default line styles
+export const defaultLineStyles: ChartLineStyles = {
+    thousandLines: {
+        color: '#64748b',
+        width: 1,
+        dash: [3, 3],
+    },
+    btcQuoteLine: {
+        color: '#ef4444',
+        width: 2,
+        dash: [5, 5],
+    },
+};
+
 interface LiquidationChartProps {
     data: HistoricalLiquidation[];
     formatCurrency: (value: number) => string;
     groupBy?: 'none' | 'long' | 'short' | 'combined' | 'stacked';
     currentPrice?: number | null;
     priceInterval: number;
+    lineStyles?: ChartLineStyles;
 }
 
-const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval }: LiquidationChartProps) {
+const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval, lineStyles = defaultLineStyles }: LiquidationChartProps) {
     const chartRef = useRef<any>(null);
 
     const resetZoom = () => {
@@ -137,10 +165,10 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             type: 'line' as const,
             label: '',
             data: lineData,
-            borderColor: '#64748b',
+            borderColor: lineStyles.thousandLines.color,
             backgroundColor: 'transparent',
-            borderWidth: 1,
-            borderDash: [3, 3],
+            borderWidth: lineStyles.thousandLines.width,
+            borderDash: lineStyles.thousandLines.dash,
             pointRadius: 0,
             pointHoverRadius: 0,
             yAxisID: 'y',
@@ -148,7 +176,7 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             order: 0,
             spanGaps: false, // Important: creates separate segments for each vertical line
         };
-    }, [sortedData, formatCurrency]);
+    }, [sortedData, formatCurrency, lineStyles.thousandLines]);
 
     // Create chart data based on groupBy selection - memoized to preserve zoom state
     const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
@@ -218,10 +246,10 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
                         { x: closestLabel, y: 0 },
                         { x: closestLabel, y: yMax },
                     ],
-                    borderColor: '#ef4444',
+                    borderColor: lineStyles.btcQuoteLine.color,
                     backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
+                    borderWidth: lineStyles.btcQuoteLine.width,
+                    borderDash: lineStyles.btcQuoteLine.dash,
                     pointRadius: 0,
                     pointHoverRadius: 0,
                     yAxisID: 'y',
@@ -236,7 +264,7 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             labels,
             datasets,
         };
-    }, [sortedData, groupBy, formatCurrency, currentPrice, verticalLinesDataset]);
+    }, [sortedData, groupBy, formatCurrency, currentPrice, verticalLinesDataset, lineStyles]);
 
     // Memoize chart options to prevent zoom reset on re-renders
     const chartOptions: any = useMemo(() => ({
@@ -383,11 +411,28 @@ export function LiquidationTest() {
     const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '');
     const [priceRefreshInterval, setPriceRefreshInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_refresh')) || 30);
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
+    // Line styles state with localStorage persistence
+    const [lineStyles, setLineStyles] = useState<ChartLineStyles>(() => {
+        const saved = localStorage.getItem('liquidation_test_line_styles');
+        if (saved) {
+            try {
+                return { ...defaultLineStyles, ...JSON.parse(saved) };
+            } catch {
+                return defaultLineStyles;
+            }
+        }
+        return defaultLineStyles;
+    });
     const [data, setData] = useState<HistoricalLiquidation[]>([]);
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
     const [currentPrice, setCurrentPrice] = useState<number | null>(null);
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
     const isFetchingPriceRef = useRef(false);
+
+    // Persist line styles to localStorage
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_line_styles', JSON.stringify(lineStyles));
+    }, [lineStyles]);
     const { lastMessage } = useWebSocket();
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1067,6 +1112,125 @@ export function LiquidationTest() {
                             />
                             <p className="text-[10px] text-muted-foreground">Útil para ver volumes por faixas de preço específicas</p>
                         </div>
+
+                        {/* Line Styles Configuration */}
+                        <div className="space-y-3 border-t border-border pt-4 mt-4">
+                            <label className="text-sm font-medium">Estilo das Linhas de 1000</label>
+                            <div className="grid grid-cols-3 gap-2">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground">Cor</label>
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            type="color"
+                                            value={lineStyles.thousandLines.color}
+                                            onChange={(e) => setLineStyles(prev => ({
+                                                ...prev,
+                                                thousandLines: { ...prev.thousandLines, color: e.target.value }
+                                            }))}
+                                            className="w-8 h-8 rounded cursor-pointer"
+                                        />
+                                        <span className="text-xs text-muted-foreground">{lineStyles.thousandLines.color}</span>
+                                    </div>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground">Espessura</label>
+                                    <input
+                                        type="number"
+                                        min="0.5"
+                                        max="10"
+                                        step="0.5"
+                                        value={lineStyles.thousandLines.width}
+                                        onChange={(e) => setLineStyles(prev => ({
+                                            ...prev,
+                                            thousandLines: { ...prev.thousandLines, width: Number(e.target.value) }
+                                        }))}
+                                        className="w-full h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground">Traço</label>
+                                    <select
+                                        value={lineStyles.thousandLines.dash?.join(',') || 'solid'}
+                                        onChange={(e) => setLineStyles(prev => ({
+                                            ...prev,
+                                            thousandLines: {
+                                                ...prev.thousandLines,
+                                                dash: e.target.value === 'solid' ? [] : e.target.value.split(',').map(Number)
+                                            }
+                                        }))}
+                                        className="w-full h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                    >
+                                        <option value="solid">Sólido</option>
+                                        <option value="3,3">Tracejado</option>
+                                        <option value="5,5">Tracejado Longo</option>
+                                        <option value="10,5">Ponto-Tracejado</option>
+                                        <option value="2,2">Pontilhado</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3 border-t border-border pt-4">
+                            <label className="text-sm font-medium">Estilo da Linha de Cotação BTC</label>
+                            <div className="grid grid-cols-3 gap-2">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground">Cor</label>
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            type="color"
+                                            value={lineStyles.btcQuoteLine.color}
+                                            onChange={(e) => setLineStyles(prev => ({
+                                                ...prev,
+                                                btcQuoteLine: { ...prev.btcQuoteLine, color: e.target.value }
+                                            }))}
+                                            className="w-8 h-8 rounded cursor-pointer"
+                                        />
+                                        <span className="text-xs text-muted-foreground">{lineStyles.btcQuoteLine.color}</span>
+                                    </div>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground">Espessura</label>
+                                    <input
+                                        type="number"
+                                        min="0.5"
+                                        max="10"
+                                        step="0.5"
+                                        value={lineStyles.btcQuoteLine.width}
+                                        onChange={(e) => setLineStyles(prev => ({
+                                            ...prev,
+                                            btcQuoteLine: { ...prev.btcQuoteLine, width: Number(e.target.value) }
+                                        }))}
+                                        className="w-full h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground">Traço</label>
+                                    <select
+                                        value={lineStyles.btcQuoteLine.dash?.join(',') || 'solid'}
+                                        onChange={(e) => setLineStyles(prev => ({
+                                            ...prev,
+                                            btcQuoteLine: {
+                                                ...prev.btcQuoteLine,
+                                                dash: e.target.value === 'solid' ? [] : e.target.value.split(',').map(Number)
+                                            }
+                                        }))}
+                                        className="w-full h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                    >
+                                        <option value="solid">Sólido</option>
+                                        <option value="3,3">Tracejado</option>
+                                        <option value="5,5">Tracejado Longo</option>
+                                        <option value="10,5">Ponto-Tracejado</option>
+                                        <option value="2,2">Pontilhado</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setLineStyles(defaultLineStyles)}
+                                className="w-full h-8 rounded-md bg-muted text-xs text-muted-foreground hover:bg-accent transition-colors"
+                            >
+                                Restaurar Padrões
+                            </button>
+                        </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Taxa L/S (Min - Max)</label>
                             <div className="flex gap-2">
@@ -1131,6 +1295,7 @@ export function LiquidationTest() {
                                 groupBy={groupBy}
                                 currentPrice={currentPrice}
                                 priceInterval={priceInterval}
+                                lineStyles={lineStyles}
                             />
                         </CardContent>
                         {currentPrice && (
