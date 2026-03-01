@@ -99,9 +99,10 @@ interface LiquidationChartProps {
     currentPrice?: number | null;
     priceInterval: number;
     lineStyles?: ChartLineStyles;
+    gridLineInterval?: number;
 }
 
-const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval, lineStyles = defaultLineStyles }: LiquidationChartProps) {
+const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval, lineStyles = defaultLineStyles, gridLineInterval = 1000 }: LiquidationChartProps) {
     const chartRef = useRef<any>(null);
 
     const resetZoom = () => {
@@ -113,11 +114,11 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
     // Sort data by price for proper x-axis ordering - memoized to prevent unnecessary re-renders
     const sortedData = useMemo(() => [...data].sort((a, b) => a.price - b.price), [data]);
 
-    // Memoize vertical lines at multiples of 1000 - only recalculates when sortedData changes
+    // Memoize vertical lines at multiples of gridLineInterval - only recalculates when sortedData changes
     // NOT when currentPrice changes, avoiding unnecessary re-renders
     // OPTIMIZATION: Uses a single dataset with segments instead of multiple datasets
     const verticalLinesDataset = useMemo(() => {
-        if (sortedData.length === 0) return null;
+        if (sortedData.length === 0 || gridLineInterval <= 0) return null;
 
         const maxVolume = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
         const yMax = maxVolume * 1.1;
@@ -126,9 +127,9 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
         const minDataPrice = sortedData[0].price;
         const maxDataPrice = sortedData[sortedData.length - 1].price;
 
-        // Calculate multiples of 1000 within the data range
-        const firstMultiple = Math.ceil(minDataPrice / 1000) * 1000;
-        const lastMultiple = Math.floor(maxDataPrice / 1000) * 1000;
+        // Calculate multiples of gridLineInterval within the data range
+        const firstMultiple = Math.ceil(minDataPrice / gridLineInterval) * gridLineInterval;
+        const lastMultiple = Math.floor(maxDataPrice / gridLineInterval) * gridLineInterval;
 
         // Create labels array for lookup (same as used in the chart)
         const priceLabels = sortedData.map(d => formatCurrency(d.price));
@@ -137,8 +138,8 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
         // Using null values to create gaps between lines (spanGaps: false)
         const lineData: any[] = [];
 
-        // Add vertical line for each multiple of 1000
-        for (let multiple = firstMultiple; multiple <= lastMultiple; multiple += 1000) {
+        // Add vertical line for each multiple of gridLineInterval
+        for (let multiple = firstMultiple; multiple <= lastMultiple; multiple += gridLineInterval) {
             // Find the data point closest to this price multiple
             const prices = sortedData.map(d => d.price);
             const closestIndex = prices.reduce((closestIdx, price, idx) => {
@@ -155,7 +156,7 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             );
 
             // Add null to create a gap before the next line (unless it's the last one)
-            if (multiple + 1000 <= lastMultiple) {
+            if (multiple + gridLineInterval <= lastMultiple) {
                 lineData.push({ x: null, y: null });
             }
         }
@@ -176,7 +177,7 @@ const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, 
             order: 0,
             spanGaps: false, // Important: creates separate segments for each vertical line
         };
-    }, [sortedData, formatCurrency, lineStyles.thousandLines]);
+    }, [sortedData, formatCurrency, lineStyles.thousandLines, gridLineInterval]);
 
     // Create chart data based on groupBy selection - memoized to preserve zoom state
     const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
@@ -410,6 +411,7 @@ export function LiquidationTest() {
     const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '');
     const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '');
     const [priceRefreshInterval, setPriceRefreshInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_refresh')) || 30);
+    const [gridLineInterval, setGridLineInterval] = useState(() => Number(localStorage.getItem('liquidation_test_grid_line_interval')) || 1000);
     const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     // Line styles state with localStorage persistence
     const [lineStyles, setLineStyles] = useState<ChartLineStyles>(() => {
@@ -487,6 +489,10 @@ export function LiquidationTest() {
     useEffect(() => {
         localStorage.setItem('liquidation_test_price_refresh', String(priceRefreshInterval));
     }, [priceRefreshInterval]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_grid_line_interval', String(gridLineInterval));
+    }, [gridLineInterval]);
 
     const handleExportCSV = () => {
         if (processedData.length === 0) {
@@ -1115,7 +1121,19 @@ export function LiquidationTest() {
 
                         {/* Line Styles Configuration */}
                         <div className="space-y-3 border-t border-border pt-4 mt-4">
-                            <label className="text-sm font-medium">Estilo das Linhas de 1000</label>
+                            <label className="text-sm font-medium">Estilo das Linhas de Grade</label>
+                            <div className="space-y-2">
+                                <label className="text-[10px] text-muted-foreground">Intervalo das Linhas ($)</label>
+                                <input
+                                    type="number"
+                                    min="100"
+                                    step="100"
+                                    value={gridLineInterval}
+                                    onChange={(e) => setGridLineInterval(Number(e.target.value))}
+                                    placeholder="Ex: 1000"
+                                    className="w-full h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                                />
+                            </div>
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="space-y-1">
                                     <label className="text-[10px] text-muted-foreground">Cor</label>
@@ -1296,6 +1314,7 @@ export function LiquidationTest() {
                                 currentPrice={currentPrice}
                                 priceInterval={priceInterval}
                                 lineStyles={lineStyles}
+                                gridLineInterval={gridLineInterval}
                             />
                         </CardContent>
                         {currentPrice && (
