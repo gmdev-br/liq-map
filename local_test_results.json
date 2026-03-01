@@ -1,0 +1,47 @@
+{
+  "main_page": {
+    "success": true,
+    "data": 200
+  },
+  "console_errors": {
+    "success": true,
+    "data": {
+      "total": 16,
+      "errors": [
+        "Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769770702&to=1772362702&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED",
+        "Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769770702&to=1772362702&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED",
+        "Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769770703&to=1772362703&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED",
+        "Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769770704&to=1772362704&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+        "Failed to load resource: net::ERR_FAILED"
+      ]
+    }
+  },
+  "api_endpoints": {
+    "success": true,
+    "data": {
+      "coinalyze": {
+        "status": 404,
+        "content_length": 159,
+        "content_preview": "The server is configured with a public base URL of /Coinglass/ - did you mean to visit <a href=\"/Coinglass/api/coinalyze\">/Coinglass/api/coinalyze</a> instead?"
+      },
+      "binance": {
+        "status": 200,
+        "content": "{\"symbol\":\"BTCUSDT\",\"price\":\"66463.19000000\"}"
+      }
+    }
+  },
+  "app_loads": {
+    "success": true,
+    "data": {
+      "body_has_content": true,
+      "has_react_root": true,
+      "visible_text_length": 547,
+      "visible_text_preview": "Coinglass\nDashboard\nTeste Liquida\u00e7\u00e3o\nPrices\nExchanges\nAlerts\nSettings\n\nCrypto Analytics\n\nv1.0.0\n\nToggle Menu\nDashboard\nLive\nDashboard\n\nReal-time cryptocurrency liquidation tracking\n\nLast 1 hour\nLast 2",
+      "current_url": "http://localhost:5173/Coinglass/",
+      "has_navigation": true
+    }
+  }
+}

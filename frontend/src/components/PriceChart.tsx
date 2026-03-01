@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -18,6 +18,21 @@ import {
 import zoomPlugin from 'chartjs-plugin-zoom';
 import { Chart as ReactChart } from 'react-chartjs-2';
 import type { Liquidation, Price } from '@/types';
+
+// Storage key prefix for chart zoom/pan state
+const CHART_ZOOM_STORAGE_KEY = 'coinglass-chart-zoom';
+
+// Helper to get storage key for a specific symbol
+const getZoomStorageKey = (symbol: string | undefined) => {
+  const key = symbol || 'default';
+  return `${CHART_ZOOM_STORAGE_KEY}-${key}`;
+};
+
+// Type for stored zoom state
+interface ZoomState {
+  min: number;
+  max: number;
+}
 
 // Custom crosshair plugin
 const crosshairPlugin = {
@@ -82,6 +97,7 @@ interface PriceChartProps {
   color?: string;
   showGrid?: boolean;
   height?: number;
+  symbol?: string;
 }
 
 export function PriceChart({
@@ -92,8 +108,44 @@ export function PriceChart({
   color = '#3b82f6',
   showGrid = true,
   height = 300,
+  symbol,
 }: PriceChartProps) {
   const chartRef = useRef<Chart<'line' | 'bar'>>(null);
+
+  // Load saved zoom state from localStorage
+  const loadSavedZoomState = useCallback((): ZoomState | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const saved = localStorage.getItem(getZoomStorageKey(symbol));
+      if (saved) {
+        return JSON.parse(saved) as ZoomState;
+      }
+    } catch {
+      // Ignore parsing errors
+    }
+    return null;
+  }, [symbol]);
+
+  // Save zoom state to localStorage
+  const saveZoomState = useCallback((state: ZoomState) => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(getZoomStorageKey(symbol), JSON.stringify(state));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [symbol]);
+
+  // Restore zoom state when chart is ready
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const savedState = loadSavedZoomState();
+    if (savedState && chart.scales.x) {
+      chart.zoomScale('x', { min: savedState.min, max: savedState.max }, 'default');
+    }
+  }, [loadSavedZoomState]);
 
   const formattedData = useMemo(() => {
     return data.map((item) => {
@@ -185,7 +237,12 @@ export function PriceChart({
           pan: {
             enabled: true,
             mode: 'x',
-            // Pan without requiring shift key
+            onPan: ({ chart }) => {
+              const xScale = chart.scales.x;
+              if (xScale) {
+                saveZoomState({ min: xScale.min, max: xScale.max });
+              }
+            },
           },
           zoom: {
             wheel: {
@@ -195,6 +252,12 @@ export function PriceChart({
               enabled: true,
             },
             mode: 'x',
+            onZoom: ({ chart }) => {
+              const xScale = chart.scales.x;
+              if (xScale) {
+                saveZoomState({ min: xScale.min, max: xScale.max });
+              }
+            },
           },
         },
       },
@@ -241,13 +304,17 @@ export function PriceChart({
         duration: 300,
       },
     }),
-    [showGrid, dataKey, color]
+    [showGrid, dataKey, color, saveZoomState]
   );
 
   // Reset zoom function
   const resetZoom = () => {
     if (chartRef.current) {
       chartRef.current.resetZoom();
+      // Clear saved zoom state
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(getZoomStorageKey(symbol));
+      }
     }
   };
 

@@ -9,6 +9,8 @@ export interface Liquidation {
   amount: number;
   exchange: string;
   timestamp: string;
+  long_volume?: number;
+  short_volume?: number;
 }
 
 export interface Price {

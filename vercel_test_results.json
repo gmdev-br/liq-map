@@ -1,0 +1,39 @@
+{
+  "main_page": {
+    "success": true,
+    "data": 401
+  },
+  "console_errors": {
+    "success": true,
+    "data": {
+      "total": 13,
+      "errors": [
+        "Failed to load resource: the server responded with a status of 401 ()",
+        "Failed to load resource: the server responded with a status of 403 ()",
+        "Provider's accounts list is empty.",
+        "Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID"
+      ]
+    }
+  },
+  "api_endpoints": {
+    "success": true,
+    "data": {
+      "coinalyze": {
+        "error": "Response.text: Protocol error (Network.getResponseBody): No resource with given identifier found"
+      },
+      "binance": {
+        "status": 200,
+        "content": "{\"symbol\":\"BTCUSDT\",\"price\":\"66477.66000000\"}"
+      }
+    }
+  },
+  "app_loads": {
+    "success": true,
+    "data": {
+      "body_has_content": true,
+      "has_react_root": false,
+      "visible_text_length": 307,
+      "current_url": "https://vercel.com/login?next=%2Fsso-api%3Furl%3Dhttps%253A%252F%252Ffrontend-es00iav94-wagnercgr-gmailcoms-projects.vercel.app%252F%26nonce%3D29e2fb86a7a21ed1d8653974e40546dfdd4790cf114bd220083975707483f303"
+    }
+  }
+}

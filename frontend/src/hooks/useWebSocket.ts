@@ -27,54 +27,80 @@ export function useWebSocket() {
       reconnectTimer = null;
     }
 
-    // Connect DIRECTLY to backend — bypasses Vite proxy to avoid HMR conflicts
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//127.0.0.1:8000/ws`;
+    // Connect DIRECTLY to Binance Public Futures Stream
+    const symbol = 'btcusdt';
+    const wsUrl = `wss://fstream.binance.com/stream?streams=${symbol}@forceOrder/${symbol}@aggTrade`;
 
-    console.log(`[WebSocket] Connecting to ${wsUrl} (attempt ${reconnectAttempts + 1})...`);
+    console.log(`[WebSocket] Connecting to Binance ${wsUrl} (attempt ${reconnectAttempts + 1})...`);
 
     isConnecting = true;
     const ws = new WebSocket(wsUrl);
     sharedWs = ws;
 
     ws.onopen = () => {
-      console.log('[WebSocket] Shared connection open');
+      console.log('[WebSocket] Connected to Binance Streams');
       isConnecting = false;
       reconnectAttempts = 0;
       setWsConnected(true);
       setLocalConnected(true);
-
-      // Auto-subscribe to main streams
-      ws.send(JSON.stringify({
-        action: 'subscribe',
-        streams: ['liquidation', 'price']
-      }));
     };
 
     ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        setLastMessage(data);
-        // Notify any other hooks that might be listening
-        listeners.forEach(listener => listener(data));
+        const payload = JSON.parse(event.data);
+        if (!payload.stream) return;
+
+        let formattedMsg: any = null;
+
+        if (payload.stream.includes('@forceOrder')) {
+          const data = payload.data.o;
+          // Map Binance liquidation to our type
+          formattedMsg = {
+            type: 'liquidation',
+            data: {
+              id: String(payload.data.E),
+              symbol: data.s,
+              side: data.S === 'BUY' ? 'short' : 'long', // if side is BUY, a short was liquidated
+              price: parseFloat(data.ap),
+              quantity: parseFloat(data.q),
+              amount: parseFloat(data.ap) * parseFloat(data.q),
+              exchange: 'binance',
+              timestamp: new Date(payload.data.E).toISOString()
+            }
+          };
+        } else if (payload.stream.includes('@aggTrade')) {
+          const data = payload.data;
+          formattedMsg = {
+            type: 'price',
+            data: {
+              symbol: data.s,
+              price: parseFloat(data.p),
+              timestamp: new Date(data.T).toISOString()
+            }
+          };
+        }
+
+        if (formattedMsg) {
+          setLastMessage(formattedMsg);
+          listeners.forEach(listener => listener(formattedMsg));
+        }
+
       } catch (e) {
-        console.error('[WebSocket] Error parsing message:', e);
+        console.error('[WebSocket] Error parsing Binance message:', e);
       }
     };
 
     ws.onclose = (event) => {
-      console.log(`[WebSocket] Connection closed (code: ${event.code})`);
+      console.log(`[WebSocket] Connection closed`);
       isConnecting = false;
       sharedWs = null;
       setWsConnected(false);
       setLocalConnected(false);
 
-      if (event.code !== 1000) {
-        const delay = Math.min(INITIAL_BACKOFF * Math.pow(2, reconnectAttempts), MAX_BACKOFF);
-        reconnectAttempts++;
-        console.log(`[WebSocket] Reconnecting in ${delay}ms...`);
-        reconnectTimer = setTimeout(connect, delay);
-      }
+      const delay = Math.min(INITIAL_BACKOFF * Math.pow(2, reconnectAttempts), MAX_BACKOFF);
+      reconnectAttempts++;
+      console.log(`[WebSocket] Reconnecting in ${delay}ms...`);
+      reconnectTimer = setTimeout(connect, delay);
     };
 
     ws.onerror = (error) => {
@@ -101,7 +127,7 @@ export function useWebSocket() {
   return {
     isConnected: localConnected,
     lastMessage,
-    // Add a helper to send messages through the shared socket
+    // Add a helper to send messages through the shared socket (though not strictly needed for public streams)
     send: (msg: any) => {
       if (sharedWs?.readyState === WebSocket.OPEN) {
         sharedWs.send(JSON.stringify(msg));

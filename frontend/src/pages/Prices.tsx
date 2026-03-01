@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { TrendingUp, TrendingDown, RefreshCw, Loader2 } from 'lucide-react';
 import { exchangesApi, symbolsApi } from '@/services/api';
@@ -12,14 +12,16 @@ import {
   PointElement,
   LineElement,
   BarElement,
+  ScatterController,
   Title,
   Tooltip,
   Legend,
   ChartData,
   ChartOptions,
+  Chart,
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
-import { Chart } from 'react-chartjs-2';
+import { Chart as ReactChart } from 'react-chartjs-2';
 
 // Register Chart.js components
 ChartJS.register(
@@ -28,6 +30,7 @@ ChartJS.register(
   PointElement,
   LineElement,
   BarElement,
+  ScatterController,
   Title,
   Tooltip,
   Legend,
@@ -39,6 +42,8 @@ export function Prices() {
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC/USDT');
   const [timeInterval, setTimeInterval] = useState<string>('1h');
   const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short'>('none');
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const chartRef = useRef<Chart<'bar' | 'line'>>(null);
 
   // Fetch exchanges
   const { data: exchanges } = useQuery({
@@ -88,6 +93,14 @@ export function Prices() {
     return mockPriceData.filter(d => d.side === groupBy);
   }, [mockPriceData, groupBy]);
 
+  // Update current price when filtered data changes
+  useEffect(() => {
+    if (filteredPriceData.length > 0) {
+      setCurrentPrice(filteredPriceData[filteredPriceData.length - 1].price);
+    }
+  }, [filteredPriceData]);
+
+
   // Calculate price change with empty data check
   const priceChange = filteredPriceData.length > 1 
     ? filteredPriceData[filteredPriceData.length - 1].price - filteredPriceData[0].price 
@@ -96,36 +109,94 @@ export function Prices() {
     ? (priceChange / filteredPriceData[0].price) * 100
     : 0;
 
+  // Get current price for the horizontal line
+  const currentPriceValue = filteredPriceData.length > 0
+    ? filteredPriceData[filteredPriceData.length - 1].price
+    : null;
+
+  // Calculate dynamic Y axis range based on actual price data
+  const priceRange = useMemo(() => {
+    if (filteredPriceData.length === 0) {
+      return { min: 0, max: 100 };
+    }
+    const prices = filteredPriceData.map(d => d.price);
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    const currentPrice = filteredPriceData[filteredPriceData.length - 1].price;
+
+    // Add 5% padding to ensure the line is visible and there's breathing room
+    const padding = (maxPrice - minPrice) * 0.1 || currentPrice * 0.05;
+    const yMin = Math.min(minPrice, currentPrice) - padding;
+    const yMax = Math.max(maxPrice, currentPrice) + padding;
+
+    return { min: yMin, max: yMax };
+  }, [filteredPriceData]);
+
   // Chart data
   const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
-    return {
-      labels: filteredPriceData.map((d) => d.time),
-      datasets: [
-        {
-          type: 'line' as const,
-          label: 'Price',
-          data: filteredPriceData.map((d) => d.price),
-          borderColor: groupBy === 'long' ? '#10b981' : groupBy === 'short' ? '#ef4444' : '#3b82f6',
-          backgroundColor: 'transparent',
-          borderWidth: 2,
-          pointRadius: 0,
-          pointHoverRadius: 6,
-          yAxisID: 'y',
-          tension: 0.4,
-        },
-        {
-          type: 'bar' as const,
-          label: 'Volume',
-          data: filteredPriceData.map((d) => d.volume),
-          backgroundColor: groupBy === 'long' ? '#10b981' : groupBy === 'short' ? '#ef4444' : '#10b981',
-          borderRadius: 4,
-          yAxisID: 'y1',
-        },
-      ],
-    };
-  }, [filteredPriceData, groupBy]);
+    const labels = filteredPriceData.map((d) => d.time);
+    const datasets: any[] = [
+      {
+        type: 'line' as const,
+        label: 'Price',
+        data: filteredPriceData.map((d) => d.price),
+        borderColor: groupBy === 'long' ? '#10b981' : groupBy === 'short' ? '#ef4444' : '#3b82f6',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 6,
+        yAxisID: 'y',
+        xAxisID: 'x',
+        tension: 0.4,
+        order: 1,
+      },
+      {
+        type: 'bar' as const,
+        label: 'Volume',
+        data: filteredPriceData.map((d) => d.volume),
+        backgroundColor: groupBy === 'long' ? '#10b981' : groupBy === 'short' ? '#ef4444' : '#10b981',
+        borderRadius: 4,
+        yAxisID: 'y1',
+        xAxisID: 'x',
+        order: 2,
+      },
+    ];
 
-  const chartOptions: ChartOptions<'bar' | 'line'> = {
+    // Add vertical line at current time (last data point)
+    if (currentPriceValue && labels.length > 0) {
+      const lastIndex = labels.length - 1;
+      // Use dynamic Y range based on actual price data
+      const yMin = priceRange.min;
+      const yMax = priceRange.max;
+
+      // Create a scatter dataset that draws a vertical line at the last X position
+      datasets.push({
+        type: 'scatter' as const,
+        label: '',
+        data: [
+          { x: lastIndex, y: yMin },
+          { x: lastIndex, y: yMax },
+        ],
+        borderColor: '#ef4444',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        borderDash: [5, 5],
+        pointRadius: 0,
+        pointHoverRadius: 0,
+        yAxisID: 'y',
+        xAxisID: 'x',
+        order: 0,
+        showLine: true, // Connect points with a line
+      });
+    }
+
+    return {
+      labels,
+      datasets,
+    };
+  }, [filteredPriceData, groupBy, currentPriceValue, priceRange]);
+
+  const chartOptions: ChartOptions<'bar' | 'line'> = useMemo(() => ({
     responsive: true,
     maintainAspectRatio: false,
     interaction: {
@@ -198,8 +269,9 @@ export function Prices() {
           },
           callback: (value) => `$${Number(value).toLocaleString()}`,
         },
-        min: 40000,
-        max: 50000,
+        min: priceRange.min,
+        max: priceRange.max,
+        beginAtZero: false,
       },
       y1: {
         type: 'linear',
@@ -216,7 +288,7 @@ export function Prices() {
         },
       },
     },
-  };
+  }), [priceRange]);
 
   return (
     <div className="space-y-6">
@@ -338,14 +410,26 @@ export function Prices() {
 
       {/* Price Chart */}
       <Card>
-        <CardHeader 
-          title={`${selectedSymbol} Price Chart`} 
-          description={`${selectedExchange.toUpperCase()} - ${timeInterval}${groupBy !== 'none' ? ` - ${groupBy.toUpperCase()} only` : ''}`} 
+        <CardHeader
+          title={`${selectedSymbol} Price Chart`}
+          description={`${selectedExchange.toUpperCase()} - ${timeInterval}${groupBy !== 'none' ? ` - ${groupBy.toUpperCase()} only` : ''}`}
         />
         <CardContent>
           <div className="h-[400px] w-full">
-            <Chart type="bar" data={chartData} options={chartOptions} />
+            <ReactChart
+              ref={chartRef}
+              type="bar"
+              data={chartData}
+              options={chartOptions}
+            />
           </div>
+          {currentPriceValue && (
+            <div className="mt-4 flex justify-center">
+              <span className="text-sm font-semibold text-red-500">
+                BTC: ${currentPriceValue.toLocaleString()}
+              </span>
+            </div>
+          )}
         </CardContent>
       </Card>
 

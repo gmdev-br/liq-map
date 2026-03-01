@@ -22,7 +22,7 @@ export function Settings() {
     if (storedKey) {
       setApiKey(storedKey);
     }
-    
+
     // Load provider preference
     const storedProvider = localStorage.getItem('coinglass_provider');
     if (storedProvider === 'coinapi' || storedProvider === 'coinalyze') {
@@ -30,66 +30,28 @@ export function Settings() {
     }
   }, []);
 
-  const validateApiKey = async (key: string, prov: 'coinapi' | 'coinalyze'): Promise<boolean> => {
-    setValidationStatus('validating');
-    setValidationMessage('');
-    
-    try {
-      const response = await axios.post('/api/v1/settings/validate-api-key', {
-        api_key: key,
-        provider: prov
-      });
-      
-      if (response.data.valid) {
-        setValidationStatus('success');
-        setValidationMessage(response.data.message || '✓ API key válida');
-        return true;
-      } else {
-        setValidationStatus('error');
-        setValidationMessage(response.data.message || 'Chave de API inválida ou expirada');
-        return false;
-      }
-    } catch (error: any) {
-      // If endpoint is not available, allow saving anyway (backward compatibility)
-      if (error.response?.status === 404 || error.code === 'ERR_NETWORK') {
-        console.warn('Validation endpoint not available, allowing save');
-        setValidationStatus('idle');
-        setValidationMessage('');
-        return true;
-      }
-      
-      const errorMessage = error.response?.data?.message || 'Erro ao validar API key';
-      setValidationStatus('error');
-      setValidationMessage(errorMessage);
-      return false;
-    }
-  };
-
-  const handleSaveApiKey = async () => {
+  const handleSaveApiKey = () => {
     if (!apiKey.trim()) {
       toast.error('Por favor, insira uma API key');
       return;
     }
 
-    // Validate before saving
-    const isValid = await validateApiKey(apiKey, provider);
-    
-    if (isValid) {
+    // Save directly to local storage and unified state
+    try {
       localStorage.setItem('coinglass_api_key', apiKey);
       localStorage.setItem('coinglass_provider', provider);
       setSettings({ apiKey });
-      
-      if (validationStatus !== 'idle') {
-        toast.success('API Key saved successfully');
-      }
-      
-      // Reset validation status after successful save
+
+      toast.success('Configurações da API salvas com sucesso');
+      setValidationStatus('success');
+      setValidationMessage('Chave ativada no navegador');
+
       setTimeout(() => {
         setValidationStatus('idle');
         setValidationMessage('');
       }, 3000);
-    } else {
-      toast.error(validationMessage || 'API key inválida');
+    } catch (e) {
+      toast.error('Erro ao salvar as configurações.');
     }
   };
 
@@ -175,7 +137,7 @@ export function Settings() {
                 Save
               </button>
             </div>
-            
+
             {/* Validation feedback */}
             {validationStatus === 'validating' && (
               <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
@@ -183,21 +145,21 @@ export function Settings() {
                 Validando API key...
               </div>
             )}
-            
+
             {validationStatus === 'success' && (
               <div className="mt-2 flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
                 <CheckCircle className="h-4 w-4" />
                 {validationMessage}
               </div>
             )}
-            
+
             {validationStatus === 'error' && (
               <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
                 <XCircle className="h-4 w-4" />
                 {validationMessage}
               </div>
             )}
-            
+
             <p className="mt-2 text-xs text-muted-foreground">
               Get your API key from the Coinglass API dashboard
             </p>

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  base: '/Coinglass/',
+  base: '/',
   plugins: [react()],
   resolve: {
     alias: {
@@ -16,14 +16,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
+      '/api/coinalyze': {
+        target: 'https://api.coinalyze.net',
         changeOrigin: true,
-      },
-      '/ws': {
-        target: 'ws://localhost:8000',
-        ws: true,
-      },
-    },
+        rewrite: (path) => path.replace(/^\/api\/coinalyze/, '/v1/liquidation-history')
+      }
+    }
   },
 })

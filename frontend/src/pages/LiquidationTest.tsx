@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react';
 import {
     RefreshCw,
     BarChart3,
@@ -15,16 +15,21 @@ import {
     RotateCcw
 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
-import axios from 'axios';
-import { format } from 'date-fns';
 import { useCacheData } from '@/hooks/useCacheData';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { format } from 'date-fns';
+import { liquidationsApi, pricesApi } from '@/services/api';
 import { exportToCSV, exportToJSON, importFromCSV, importFromJSON, generateExportFilename } from '@/utils/exportImport';
 import {
     Chart as ChartJS,
     CategoryScale,
     LinearScale,
     PointElement,
+    LineElement,
     BarElement,
+    BarController,
+    LineController,
+    ScatterController,
     Title,
     Tooltip as ChartTooltip,
     Legend as ChartLegend,
@@ -39,7 +44,11 @@ ChartJS.register(
     CategoryScale,
     LinearScale,
     PointElement,
+    LineElement,
     BarElement,
+    BarController,
+    LineController,
+    ScatterController,
     Title,
     ChartTooltip,
     ChartLegend,
@@ -64,7 +73,7 @@ interface LiquidationChartProps {
     priceInterval: number;
 }
 
-function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval }: LiquidationChartProps) {
+const LiquidationChart = memo(function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice, priceInterval }: LiquidationChartProps) {
     const chartRef = useRef<any>(null);
 
     const resetZoom = () => {
@@ -73,14 +82,15 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice
         }
     };
 
-    // Sort data by price for proper x-axis ordering
-    const sortedData = [...data].sort((a, b) => a.price - b.price);
+    // Sort data by price for proper x-axis ordering - memoized to prevent unnecessary re-renders
+    const sortedData = useMemo(() => [...data].sort((a, b) => a.price - b.price), [data]);
 
-    // Create chart data based on groupBy selection
-    const chartData: ChartData<'bar'> = {
-        labels: sortedData.map((d) => formatCurrency(d.price)),
-        datasets: groupBy === 'stacked'
+    // Create chart data based on groupBy selection - memoized to preserve zoom state
+    const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
+        const labels = sortedData.map((d) => formatCurrency(d.price));
+        const datasets: any[] = groupBy === 'stacked'
             ? [{
+                type: 'bar' as const,
                 label: 'Total Volume',
                 data: sortedData.map((d) => d.long_volume + d.short_volume),
                 backgroundColor: '#3b82f6',
@@ -88,21 +98,71 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice
             }]
             : [
                 {
+                    type: 'bar' as const,
                     label: 'Longs',
                     data: sortedData.map((d) => d.long_volume),
                     backgroundColor: '#10b981',
                     borderRadius: 4,
                 },
                 {
+                    type: 'bar' as const,
                     label: 'Shorts',
                     data: sortedData.map((d) => d.short_volume),
                     backgroundColor: '#ef4444',
                     borderRadius: 4,
                 },
-            ],
-    };
+            ];
 
-    const chartOptions: any = {
+        // Add vertical line at current price if we have a price value and data
+        if (currentPrice && sortedData.length > 0) {
+            const maxVolume = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
+            const yMax = maxVolume * 1.1;
+
+            // Get the price range of the displayed data
+            const minDataPrice = sortedData[0].price;
+            const maxDataPrice = sortedData[sortedData.length - 1].price;
+
+            // Only draw the line if current price is within or near the displayed data range
+            // Allow some margin for visual clarity
+            const priceMargin = (maxDataPrice - minDataPrice) * 0.05;
+
+            if (currentPrice >= minDataPrice - priceMargin && currentPrice <= maxDataPrice + priceMargin) {
+                // Find the index closest to current price for vertical line placement
+                const prices = sortedData.map(d => d.price);
+                const closestIndex = prices.reduce((closestIdx, price, idx) => {
+                    return Math.abs(price - currentPrice) < Math.abs(prices[closestIdx] - currentPrice) ? idx : closestIdx;
+                }, 0);
+
+                // Create a vertical line using scatter with line at the current price index
+                datasets.push({
+                    type: 'scatter' as const,
+                    label: '',
+                    data: [
+                        { x: closestIndex, y: 0 },
+                        { x: closestIndex, y: yMax },
+                    ],
+                    borderColor: '#ef4444',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    yAxisID: 'y',
+                    xAxisID: 'x',
+                    order: 0,
+                    showLine: true, // Connect points with a line to create vertical line
+                });
+            }
+        }
+
+        return {
+            labels,
+            datasets,
+        };
+    }, [sortedData, groupBy, formatCurrency, currentPrice]);
+
+    // Memoize chart options to prevent zoom reset on re-renders
+    const chartOptions: any = useMemo(() => ({
         responsive: true,
         maintainAspectRatio: false,
         interaction: {
@@ -214,121 +274,11 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice
                 },
             },
         },
-    };
-
-    // Custom plugin to draw the current price vertical line
-    const currentPricePlugin = {
-        id: 'currentPriceLine',
-        afterDraw: (chart: any) => {
-            if (!currentPrice || sortedData.length === 0) return;
-
-            const { ctx, chartArea: { top, bottom, left, right } } = chart;
-            const meta = chart.getDatasetMeta(0);
-
-            if (!meta || !meta.data || meta.data.length === 0) return;
-
-            // Find price range covered by our data
-            const minPrice = sortedData[0].price;
-            const maxPrice = sortedData[sortedData.length - 1].price;
-
-            // Only draw if price is within current chart range
-            if (currentPrice < minPrice || currentPrice > maxPrice) return;
-
-            // Find the index that corresponds to currentPrice
-            let lowerIdx = 0;
-            for (let i = 0; i < sortedData.length - 1; i++) {
-                if (sortedData[i + 1].price > currentPrice) {
-                    lowerIdx = i;
-                    break;
-                }
-                lowerIdx = i;
-            }
-
-            const upperIdx = Math.min(lowerIdx + 1, sortedData.length - 1);
-
-            // Fix for undefined meta data when chart has less data rendered than sortedData
-            if (!meta.data[lowerIdx] || !meta.data[upperIdx]) return;
-
-            // Get pixels directly from the actual rendered bars center points
-            const x1 = meta.data[lowerIdx].x;
-            const x2 = meta.data[upperIdx].x;
-            const p1 = sortedData[lowerIdx].price;
-            const p2 = sortedData[upperIdx].price;
-
-            let xPos;
-            if (p1 === p2 || x1 === x2) {
-                xPos = x1;
-            } else {
-                // Precise linear interpolation for pixel position between category centers
-                xPos = x1 + (x2 - x1) * (currentPrice - p1) / (p2 - p1);
-            }
-
-            if (xPos !== null && xPos >= left && xPos <= right) {
-                ctx.save();
-
-                // Draw vertical line
-                ctx.beginPath();
-                ctx.setLineDash([5, 5]);
-                ctx.moveTo(xPos, top);
-                ctx.lineTo(xPos, bottom);
-                ctx.lineWidth = 1.5;
-                ctx.strokeStyle = '#ef4444';
-                ctx.stroke();
-
-                // Draw label at the top
-                const label = `Current Price: ${formatCurrency(currentPrice)}`;
-                ctx.font = 'bold 12px sans-serif';
-                const textMetrics = ctx.measureText(label);
-                const padding = 6;
-                const rectWidth = textMetrics.width + padding * 2;
-                const rectHeight = 20;
-
-                ctx.setLineDash([]);
-                ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
-                const labelX = Math.min(Math.max(xPos - rectWidth / 2, left), right - rectWidth);
-                ctx.beginPath();
-                ctx.roundRect(labelX, top - 25, rectWidth, rectHeight, 4);
-                ctx.fill();
-
-                ctx.fillStyle = '#ffffff';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(label, labelX + rectWidth / 2, top - 25 + rectHeight / 2);
-
-                // Draw pointer at top
-                ctx.beginPath();
-                ctx.moveTo(xPos, top - 5);
-                ctx.lineTo(xPos - 5, top - 12);
-                ctx.lineTo(xPos + 5, top - 12);
-                ctx.closePath();
-                ctx.fillStyle = '#ef4444';
-                ctx.fill();
-
-                // Draw label below X-axis
-                const priceLabel = formatCurrency(currentPrice);
-                ctx.font = 'bold 11px sans-serif';
-                const pMetrics = ctx.measureText(priceLabel);
-                const pWidth = pMetrics.width + 8;
-                const pHeight = 18;
-                const pY = bottom + 8;
-
-                ctx.fillStyle = '#ef4444';
-                const pX = Math.min(Math.max(xPos - pWidth / 2, left), right - pWidth);
-                ctx.beginPath();
-                ctx.roundRect(pX, pY, pWidth, pHeight, 2);
-                ctx.fill();
-
-                ctx.fillStyle = '#ffffff';
-                ctx.fillText(priceLabel, pX + pWidth / 2, pY + pHeight / 2);
-
-                ctx.restore();
-            }
-        }
-    };
+    }), [groupBy, sortedData, priceInterval, formatCurrency]);
 
     return (
         <div className="relative w-full h-full">
-            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions} plugins={[currentPricePlugin]} />
+            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions} />
             <button
                 onClick={resetZoom}
                 className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 text-xs bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 rounded-md border border-slate-600 transition-colors"
@@ -339,7 +289,7 @@ function LiquidationChart({ data, formatCurrency, groupBy = 'none', currentPrice
             </button>
         </div>
     );
-}
+});
 
 export function LiquidationTest() {
     const [apiKey, setApiKey] = useState(() => localStorage.getItem('coinalyze_api_key') || 'FREE');
@@ -360,6 +310,8 @@ export function LiquidationTest() {
     const [processedData, setProcessedData] = useState<HistoricalLiquidation[]>([]);
     const [currentPrice, setCurrentPrice] = useState<number | null>(null);
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
+    const isFetchingPriceRef = useRef(false);
+    const { lastMessage } = useWebSocket();
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -488,12 +440,12 @@ export function LiquidationTest() {
         event.target.value = '';
     };
 
-    const formatCurrency = (value: number) => {
+    const formatCurrency = useCallback((value: number) => {
         if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
         if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
         if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
         return `$${value.toFixed(2)}`;
-    };
+    }, []);
 
     const aggregateByPriceInterval = (rawData: HistoricalLiquidation[], interval: number) => {
         // 1. First, map the data to respect the side filter (zeroing out the other side)
@@ -587,22 +539,27 @@ export function LiquidationTest() {
 
     // Function to fetch ONLY the current price without reloading history
     const updateCurrentPrice = async () => {
-        if (!symbol) return;
+        if (!symbol || isFetchingPriceRef.current) return;
+
+        // Skip if price was updated recently via WebSocket
+        if (lastMessage?.type === 'price' && lastMessage.data.symbol === symbol.replace('_PERP.A', '')) {
+            const wsPriceTime = new Date(lastMessage.data.timestamp).getTime();
+            if (Date.now() - wsPriceTime < 10000) {
+                console.log(`[Auto-Update] Skipping fetch, WS price is fresh: ${lastMessage.data.price}`);
+                return;
+            }
+        }
+
+        isFetchingPriceRef.current = true;
         try {
-            const end = Math.floor(Date.now() / 1000);
-            const start = end - (3600); // 1 hour is more than enough for current ticker
+            // Do NOT pass start_date/end_date here — the system clock is in 2026 and
+            // passing Date.now() as timestamps causes Binance to reject the request.
+            // api.ts will use a safe limit-only query (limit=365) when no dates are given.
+            const response = await pricesApi.getAll({ symbol });
 
-            const priceResponse = await axios.get('/api/price-history', {
-                params: {
-                    symbols: symbol,
-                    from: start,
-                    to: end
-                }
-            });
-
-            const priceData = Array.isArray(priceResponse.data) ? priceResponse.data : [];
+            const priceData = response.data.data || [];
             if (priceData.length > 0) {
-                const latestPrice = Number(priceData[priceData.length - 1].c || 0);
+                const latestPrice = priceData[priceData.length - 1].price;
                 if (latestPrice > 0) {
                     console.log(`[Auto-Update] New price for ${symbol}: ${latestPrice}`);
                     setCurrentPrice(latestPrice);
@@ -610,6 +567,8 @@ export function LiquidationTest() {
             }
         } catch (error) {
             console.error('Error auto-updating price:', error);
+        } finally {
+            isFetchingPriceRef.current = false;
         }
     };
 
@@ -632,25 +591,23 @@ export function LiquidationTest() {
         const start = months === 0 ? end - (10 * 365 * 24 * 60 * 60) : end - (months * 30 * 24 * 60 * 60);
 
         try {
-            const response = await axios.get('/api/liquidation-history', {
-                params: {
-                    symbols: symbol,
-                    interval: 'daily',
-                    from: start,
-                    to: end,
-                    api_key: apiKey
-                }
+            const liqResponse = await liquidationsApi.getAll({
+                symbol: symbol,
+                start_date: new Date(start * 1000).toISOString(),
+                end_date: new Date(end * 1000).toISOString(),
+                amount_min: 0
             });
 
-            const priceResponse = await axios.get('/api/price-history', {
-                params: {
-                    symbols: symbol,
-                    from: start,
-                    to: end
-                }
+            const priceResponse = await pricesApi.getAll({
+                symbol: symbol,
+                start_date: new Date(start * 1000).toISOString(),
+                end_date: new Date(end * 1000).toISOString()
             });
 
-            return { liquidation: response.data, price: priceResponse.data };
+            return {
+                liquidation: liqResponse.data.data,
+                price: priceResponse.data.data
+            };
         } catch (error: any) {
             throw error;
         }
@@ -666,70 +623,104 @@ export function LiquidationTest() {
             if (!data) return;
 
             const { liquidation, price } = data;
+
+            // liquidation and price are already transformed lists of objects
             const priceData = Array.isArray(price) ? price : [];
+            
+            // Build a price map with timestamp as key (normalized to start of day)
+            // Also keep track of all available timestamps to find nearest if needed
             const priceMap = new Map();
-            priceData.forEach((p: any) => {
-                const dateKey = new Date(p.t * 1000).toISOString().split('T')[0];
-                priceMap.set(dateKey, p.c);
+            const sortedPrices = [...priceData].sort((a: any, b: any) => Number(a.timestamp) - Number(b.timestamp));
+            
+            sortedPrices.forEach((p: any) => {
+                const ts = Number(p.timestamp);
+                const dateKey = new Date(ts * 1000).toISOString().split('T')[0];
+                priceMap.set(dateKey, p.price);
             });
 
-            let rawHistory = [];
-            const resData = liquidation;
-            if (Array.isArray(resData)) {
-                rawHistory = resData[0]?.history || resData;
-            } else if (resData?.history) {
-                rawHistory = resData.history;
-            } else if (resData?.data) {
-                rawHistory = resData.data;
-            }
+            const mapped: HistoricalLiquidation[] = liquidation.map((item: any) => {
+                const timestamp = Number(item.timestamp);
+                const itemPrice = Number(item.price);
 
-            const min = 0;
-            const max = Infinity;
-
-            const mapped: HistoricalLiquidation[] = rawHistory.reduce((acc: HistoricalLiquidation[], item: any) => {
-                const longBase = item.l || item.long_volume || 0;
-                const shortBase = item.s || item.short_volume || 0;
-                const timestamp = item.t || item.time || item.timestamp;
-
+                // Use historical price from priceMap if available
                 const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
-                const price = Number(item.price || priceMap.get(dateKey) || 0);
-
-                const longUSD = longBase * (price || 1);
-                const shortUSD = shortBase * (price || 1);
-                const totalUSD = longUSD + shortUSD;
-
-                if (totalUSD >= min && (max === Infinity || totalUSD <= max)) {
-                    acc.push({
-                        timestamp: timestamp,
-                        long_volume: longUSD,
-                        short_volume: shortUSD,
-                        total_volume: totalUSD,
-                        long_short_ratio: longUSD / (shortUSD || 1),
-                        price: price
-                    });
+                let price = priceMap.get(dateKey);
+                
+                // Fallback 1: If no exact date match, look for nearest historical price
+                if (price === undefined && sortedPrices.length > 0) {
+                    // Simple binary search or find nearest
+                    let nearest = sortedPrices[0];
+                    let minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
+                    
+                    for (const p of sortedPrices) {
+                        const diff = Math.abs(Number(p.timestamp) - timestamp);
+                        if (diff < minDiff) {
+                            minDiff = diff;
+                            nearest = p;
+                        } else if (diff > minDiff) {
+                            // Since it's sorted, we can stop once diff starts increasing
+                            break;
+                        }
+                    }
+                    
+                    // Only use nearest if it's within a reasonable range (e.g., 7 days)
+                    if (minDiff <= 7 * 24 * 60 * 60) {
+                        price = nearest.price;
+                        console.log(`[DEBUG] No exact price match for ${dateKey}, using nearest: ${new Date(Number(nearest.timestamp) * 1000).toISOString().split('T')[0]}`);
+                    }
                 }
-                return acc;
-            }, []);
+                
+                // Fallback 2: Use item.price (which might be the current price from Binance fetched in api.ts)
+                if (price === undefined || price === 0) {
+                    price = itemPrice;
+                }
+
+                // Use long_volume and short_volume from API if available, otherwise calculate from side
+                const longVolume = item.long_volume !== undefined ? item.long_volume : (item.side === 'long' ? item.amount : 0);
+                const shortVolume = item.short_volume !== undefined ? item.short_volume : (item.side === 'short' ? item.amount : 0);
+
+                return {
+                    timestamp: timestamp,
+                    long_volume: longVolume,
+                    short_volume: shortVolume,
+                    total_volume: item.amount,
+                    long_short_ratio: longVolume / (shortVolume || 1),
+                    price: price
+                };
+            });
 
             setData(mapped);
 
             // Set current price from the last price data entry
             if (priceData.length > 0) {
-                setCurrentPrice(Number(priceData[priceData.length - 1].c || 0));
+                setCurrentPrice(Number(priceData[priceData.length - 1].price || 0));
             }
 
             setLastFetchTime(Date.now());
             setStatus({
                 message: isFromCache
-                    ? `Dados carregados do cache (${mapped.length} registros). Última atualização: ${new Date(lastFetchTime || Date.now()).toLocaleString('pt-BR')}`
-                    : `Dados carregados (${rawHistory.length} registros).`,
+                    ? `Dados carregados do cache (${mapped.length} registros).`
+                    : `Dados carregados (${mapped.length} registros).`,
                 type: 'success'
             });
         },
         onError: (error) => {
             console.error('Fetch error:', error);
             const errorMessage = error?.message || error?.toString() || 'Error fetching data';
-            setStatus({ message: errorMessage, type: 'error' });
+            let enhancedMessage = errorMessage;
+
+            if (errorMessage.includes('Network Error') || errorMessage.includes('403') || errorMessage.includes('CERT')) {
+                enhancedMessage = `${errorMessage}. This is likely a CORS or SSL proxy issue.`;
+
+                // Check for future clock issues (common in simulated environments)
+                if (new Date().getFullYear() > 2025) {
+                    enhancedMessage += " NOTE: Your system clock is set to 2026+, which may cause SSL certificates to appear expired. Please check your system time.";
+                } else {
+                    enhancedMessage += " Please check your internet connection or try again later.";
+                }
+            }
+
+            setStatus({ message: enhancedMessage, type: 'error' });
         }
     });
 
@@ -1065,6 +1056,13 @@ export function LiquidationTest() {
                                 priceInterval={priceInterval}
                             />
                         </CardContent>
+                        {currentPrice && (
+                            <div className="pb-4 flex justify-center">
+                                <span className="text-sm font-semibold text-red-500">
+                                    BTC: ${currentPrice.toLocaleString()}
+                                </span>
+                            </div>
+                        )}
                     </Card>
 
                     <Card>

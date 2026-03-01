@@ -8,6 +8,41 @@ import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import type { Liquidation } from '@/types';
 
+/**
+ * Robust timestamp parser that handles multiple formats:
+ * - Unix seconds (e.g., 1769817600) - multiply by 1000
+ * - Unix milliseconds (e.g., 1772378210230) - use as-is
+ * - ISO strings (e.g., '2026-03-01T15:16:50.230Z') - parse directly
+ */
+function parseTimestamp(ts: string | number): Date {
+  // If already a number, process directly
+  if (typeof ts === 'number') {
+    // If less than 10 billion, assume seconds; otherwise milliseconds
+    return ts < 10000000000 ? new Date(ts * 1000) : new Date(ts);
+  }
+  
+  // If string, try to parse it
+  const str = String(ts).trim();
+  if (!str) return new Date(NaN);
+  
+  // Try parsing as number first (could be numeric string)
+  const num = Number(str);
+  if (!isNaN(num)) {
+    // Numeric string: check if seconds or milliseconds
+    // Seconds would be < 10 billion, milliseconds >= 10 billion
+    return num < 10000000000 ? new Date(num * 1000) : new Date(num);
+  }
+  
+  // Try parsing as ISO string or other date format
+  const date = new Date(str);
+  if (!isNaN(date.getTime())) {
+    return date;
+  }
+  
+  // Failed to parse
+  return new Date(NaN);
+}
+
 export function Dashboard() {
   const [timeRange, setTimeRange] = useState('24h');
   const [liveLiquidations, setLiveLiquidations] = useState<Liquidation[]>([]);
@@ -175,7 +210,16 @@ export function Dashboard() {
                       className="border-b border-border transition-colors hover:bg-muted/50"
                     >
                       <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {format(new Date(liquidation.timestamp), 'HH:mm:ss')}
+                        {/* Debug logging for timestamp validation */}
+                        {(() => {
+                          const ts = liquidation.timestamp;
+                          const dateObj = parseTimestamp(ts);
+                          const isValid = !isNaN(dateObj.getTime());
+                          if (!isValid) {
+                            console.warn('[Dashboard] Invalid timestamp:', { id: liquidation.id, timestamp: ts, rawDate: dateObj });
+                          }
+                          return isValid ? format(dateObj, 'HH:mm:ss') : '--:--:--';
+                        })()}
                       </td>
                       <td className="px-6 py-4 font-medium">{liquidation.symbol}</td>
                       <td className="px-6 py-4">

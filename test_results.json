@@ -1,0 +1,22 @@
+{
+  "page_load": {
+    "status": "✅ SUCCESS",
+    "details": "Status: 200, URL: http://localhost:5173/Coinglass/"
+  },
+  "binance_api": {
+    "status": "✅ SUCCESS",
+    "details": "Status: 200, Preço BTC: $66544.62000000"
+  },
+  "coinalyze_api": {
+    "status": "❌ FAILED",
+    "details": "Failed to fetch"
+  },
+  "console_errors": {
+    "status": "⚠️ WARNINGS",
+    "details": "8 erro(s) encontrado(s):\n[error] Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769769226&to=1772361226&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.\n[error] Failed to load resource: net::ERR_FAILED\n[error] Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769769226&to=1772361226&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.\n[error] Failed to load resource: net::ERR_FAILED\n[error] Access to XMLHttpRequest at 'https://api.coinalyze.net/v1/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=1769769227&to=1772361227&api_key=FREE' from origin 'http://localhost:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource."
+  },
+  "screenshot": {
+    "status": "✅ SUCCESS",
+    "details": "Screenshot salva em: coinglass_test_screenshot.png"
+  }
+}
