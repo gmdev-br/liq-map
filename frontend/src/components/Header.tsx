@@ -20,7 +20,6 @@ export function Header() {
   const pageTitle = {
     '/': 'Dashboard',
     '/liquidation-test': 'Teste Liquidação',
-    '/prices': 'Prices',
     '/exchanges': 'Exchanges',
     '/alerts': 'Alerts',
     '/settings': 'Settings',

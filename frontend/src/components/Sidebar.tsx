@@ -3,7 +3,6 @@ import { useStore } from '@/store';
 import { clsx } from 'clsx';
 import {
   LayoutDashboard,
-  LineChart,
   Building2,
   Bell,
   Settings,
@@ -19,7 +18,6 @@ import {
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/liquidation-test', icon: FlaskConical, label: 'Teste Liquidação' },
-  { path: '/prices', icon: LineChart, label: 'Prices' },
   { path: '/exchanges', icon: Building2, label: 'Exchanges' },
   { path: '/alerts', icon: Bell, label: 'Alerts' },
   { path: '/settings', icon: Settings, label: 'Settings' },

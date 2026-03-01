@@ -7,8 +7,6 @@ import type {
   Exchange,
   AlertsResponse,
   Alert,
-  Symbol,
-  TechnicalIndicators,
   LiquidationStats
 } from '@/types';
 
@@ -380,22 +378,6 @@ export const pricesApi = {
       }
     };
   },
-
-  getIndicators: async (params: any): Promise<{ data: TechnicalIndicators }> => {
-    return {
-      data: {
-        symbol: params.symbol,
-        sma_20: 0,
-        sma_50: 0,
-        sma_200: 0,
-        ema_12: 0,
-        ema_26: 0,
-        rsi_14: 50,
-        macd: { value: 0, signal: 0, histogram: 0 },
-        bb: { upper: 0, middle: 0, lower: 0 }
-      }
-    };
-  },
 };
 
 // Mocks for missing features in serverless mode
@@ -405,15 +387,6 @@ export const exchangesApi = {
   },
   getOne: async (id: string): Promise<{ data: Exchange }> => {
     return { data: {} as Exchange };
-  },
-};
-
-export const symbolsApi = {
-  getAll: async (params?: any): Promise<{ data: Symbol[] }> => {
-    return { data: [] };
-  },
-  getByExchange: async (exchange: string): Promise<{ data: Symbol[] }> => {
-    return { data: [] };
   },
 };
 

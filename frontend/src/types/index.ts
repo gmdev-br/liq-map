@@ -34,15 +34,6 @@ export interface Exchange {
   websocket_url?: string;
 }
 
-export interface Symbol {
-  id: string;
-  symbol: string;
-  base_asset: string;
-  quote_asset: string;
-  exchange: string;
-  status: 'active' | 'inactive';
-}
-
 export interface Alert {
   id: string;
   symbol: string;
@@ -65,18 +56,6 @@ export interface LiquidationStats {
   by_exchange: Record<string, number>;
   by_symbol: Record<string, number>;
   by_side: { long: number; short: number };
-}
-
-export interface TechnicalIndicators {
-  symbol: string;
-  sma_20?: number;
-  sma_50?: number;
-  sma_200?: number;
-  ema_12?: number;
-  ema_26?: number;
-  rsi_14?: number;
-  macd?: { value: number; signal: number; histogram: number };
-  bb?: { upper: number; middle: number; lower: number };
 }
 
 export interface WebSocketMessage {
