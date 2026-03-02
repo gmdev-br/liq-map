@@ -616,7 +616,7 @@ export function LiquidationTest() {
     const [amountMax, setAmountMax] = useState<string>(() => localStorage.getItem('liquidation_test_amount_max') || '');
     const [side, setSide] = useState<'all' | 'long' | 'short'>(() => (localStorage.getItem('liquidation_test_side') as 'all' | 'long' | 'short') || 'all');
     const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'combined');
-    const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '-100');
+    const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '0');
     const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '100');
     const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '55000');
     const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '80000');
@@ -1685,12 +1685,12 @@ export function LiquidationTest() {
             item.total_volume >= min && (max === Infinity || item.total_volume <= max)
         );
 
-        // Then filter by ratio if specified
+        // Then filter by ratio if specified (using modulus/absolute value)
         if (ratioMin !== null || ratioMax !== null) {
             amountFiltered = amountFiltered.filter(item => {
-                const ratio = item.long_short_ratio;
-                if (ratioMin !== null && ratio < ratioMin) return false;
-                if (ratioMax !== null && ratio > ratioMax) return false;
+                const absRatio = Math.abs(item.long_short_ratio);
+                if (ratioMin !== null && absRatio < ratioMin) return false;
+                if (ratioMax !== null && absRatio > ratioMax) return false;
                 return true;
             });
         }
