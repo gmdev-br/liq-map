@@ -503,10 +503,14 @@ export function LiquidationTest() {
         }
         return saved && saved >= 1 && saved <= 100 ? saved : 50;
     });
+    const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [minInterval, setMinInterval] = useState(() => Number(localStorage.getItem('liquidation_test_min_interval')) || 1);
     const [maxInterval, setMaxInterval] = useState(() => Number(localStorage.getItem('liquidation_test_max_interval')) || 10000);
-    const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'loading' | null }>({ message: '', type: null });
     const [validationError, setValidationError] = useState<string | null>(null);
+    const [availableSymbols, setAvailableSymbols] = useState<{ symbol: string; name: string; baseAsset: string }[]>([]);
+    const [symbolSearch, setSymbolSearch] = useState('');
+    const [isSymbolOpen, setIsSymbolOpen] = useState(false);
+    const symbolRef = useRef<HTMLDivElement>(null);
     // Line styles state with localStorage persistence
     const [lineStyles, setLineStyles] = useState<ChartLineStyles>(() => {
         const saved = localStorage.getItem('liquidation_test_line_styles');
@@ -539,6 +543,41 @@ export function LiquidationTest() {
     useEffect(() => {
         localStorage.setItem('liquidation_test_symbol', symbol);
     }, [symbol]);
+
+    // Fetch available symbols on mount
+    useEffect(() => {
+        const fetchSymbols = async () => {
+            try {
+                const symbols = await liquidationsApi.getSymbols();
+                setAvailableSymbols(symbols);
+            } catch (error) {
+                console.error('Failed to fetch symbols:', error);
+            }
+        };
+        fetchSymbols();
+    }, []);
+
+    // Close symbol dropdown when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (symbolRef.current && !symbolRef.current.contains(event.target as Node)) {
+                setIsSymbolOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    const filteredSymbols = useMemo(() => {
+        return availableSymbols.filter(s =>
+            s.name.toLowerCase().includes(symbolSearch.toLowerCase()) ||
+            s.symbol.toLowerCase().includes(symbolSearch.toLowerCase())
+        );
+    }, [availableSymbols, symbolSearch]);
+
+    const currentSymbolData = useMemo(() => {
+        return availableSymbols.find(s => s.symbol === symbol) || { symbol, name: symbol, baseAsset: symbol.split('USDT')[0] };
+    }, [availableSymbols, symbol]);
 
     useEffect(() => {
         localStorage.setItem('liquidation_test_months', String(months));
@@ -1779,16 +1818,58 @@ export function LiquidationTest() {
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Símbolo</label>
-                            <select
-                                value={symbol}
-                                onChange={(e) => setSymbol(e.target.value)}
-                                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                            >
-                                <option value="BTCUSDT_PERP.A">BTC/USDT Perpetual (Binance)</option>
-                                <option value="ETHUSDT_PERP.A">ETH/USDT Perpetual (Binance)</option>
-                                <option value="SOLUSDT_PERP.A">SOL/USDT Perpetual (Binance)</option>
-                                <option value="XRPUSDT_PERP.A">XRP/USDT Perpetual (Binance)</option>
-                            </select>
+                            <div className="relative" ref={symbolRef}>
+                                <div
+                                    className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                                    onClick={() => setIsSymbolOpen(!isSymbolOpen)}
+                                >
+                                    <span className="truncate">
+                                        {currentSymbolData.name} ({currentSymbolData.baseAsset})
+                                    </span>
+                                    <Search className="h-4 w-4 opacity-50" />
+                                </div>
+
+                                {isSymbolOpen && (
+                                    <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in zoom-in-95">
+                                        <div className="sticky top-0 z-10 bg-popover pb-1">
+                                            <div className="flex items-center border-b border-border px-2">
+                                                <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+                                                <input
+                                                    className="flex h-9 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                                    placeholder="Pesquisar ativo..."
+                                                    value={symbolSearch}
+                                                    onChange={(e) => setSymbolSearch(e.target.value)}
+                                                    autoFocus
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="pt-1">
+                                            {filteredSymbols.length > 0 ? (
+                                                filteredSymbols.map((s) => (
+                                                    <div
+                                                        key={s.symbol}
+                                                        className={`relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 px-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground ${symbol === s.symbol ? 'bg-accent text-accent-foreground' : ''}`}
+                                                        onClick={() => {
+                                                            setSymbol(s.symbol);
+                                                            setIsSymbolOpen(false);
+                                                            setSymbolSearch('');
+                                                        }}
+                                                    >
+                                                        <div className="flex flex-col">
+                                                            <span className="font-medium">{s.name}</span>
+                                                            <span className="text-[10px] text-muted-foreground">{s.symbol}</span>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div className="py-6 text-center text-sm text-muted-foreground">
+                                                    Nenhum ativo encontrado.
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Período</label>

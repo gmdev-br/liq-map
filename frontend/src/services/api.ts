@@ -20,17 +20,17 @@ const isProduction = (() => {
     if (forcedMode === 'production') return true;
     if (forcedMode === 'development') return false;
   }
-  
+
   if (typeof window === 'undefined') return false;
-  
+
   const hostname = window.location.hostname;
   const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0';
   const isDevPort = window.location.port === '5173' || window.location.port === '3000' || window.location.port === '5174';
-  
+
   // Also check for Vercel production indicators
   const isVercel = hostname.includes('.vercel.app') || hostname.includes('.vercel.sh');
   const isProductionDomain = !isLocalhost && !isDevPort;
-  
+
   return isProductionDomain || isVercel;
 })();
 
@@ -60,7 +60,7 @@ const fetchBinancePrice = async (symbol: string): Promise<number> => {
     // Remove _PERP.A or PERP.A suffix
     const binanceSymbol = symbol.replace('_PERP.A', '').replace('PERP.A', '');
     console.log('[DEBUG] Single fetch - Symbol conversion:', { original: symbol, converted: binanceSymbol });
-    
+
     // Use klines endpoint which has CORS enabled
     // Get the last closed candle (limit=1), the close price is at index [4]
     const response = await axios.get(
@@ -68,7 +68,7 @@ const fetchBinancePrice = async (symbol: string): Promise<number> => {
       { timeout: 5000 }
     );
     console.log('[DEBUG] Single fetch - Binance klines response:', response.data);
-    
+
     // klines returns array of candles, get the close price (index 4) from the last candle
     const closePrice = response.data[0]?.[4];
     return closePrice ? parseFloat(closePrice) : 0;
@@ -81,16 +81,16 @@ const fetchBinancePrice = async (symbol: string): Promise<number> => {
 // Helper to get multiple Binance prices at once using klines endpoint (CORS enabled)
 const fetchMultipleBinancePrices = async (symbols: string[]): Promise<Record<string, number>> => {
   const prices: Record<string, number> = {};
-  
+
   // Get unique symbols and convert to Binance format
   const uniqueSymbols = [...new Set(symbols.map(s => {
     const converted = s.replace('_PERP.A', '').replace('PERP.A', '');
     console.log('[DEBUG] Symbol conversion:', { original: s, converted });
     return converted;
   }))];
-  
+
   console.log('[DEBUG] Fetching Binance prices for symbols:', uniqueSymbols);
-  
+
   // Fetch prices in parallel using klines endpoint (CORS enabled)
   const promises = uniqueSymbols.map(async (symbol) => {
     try {
@@ -102,7 +102,7 @@ const fetchMultipleBinancePrices = async (symbols: string[]): Promise<Record<str
         { timeout: 5000 }
       );
       console.log('[DEBUG] Binance klines response for', symbol, ':', response.data);
-      
+
       // klines returns array of candles, get the close price (index 4) from the last candle
       const closePrice = response.data[0]?.[4];
       prices[symbol] = closePrice ? parseFloat(closePrice) : 0;
@@ -111,7 +111,7 @@ const fetchMultipleBinancePrices = async (symbols: string[]): Promise<Record<str
       prices[symbol] = 0;
     }
   });
-  
+
   await Promise.all(promises);
   console.log('[DEBUG] Final prices:', prices);
   return prices;
@@ -120,7 +120,7 @@ const fetchMultipleBinancePrices = async (symbols: string[]): Promise<Record<str
 const fetchWithProxy = async (targetUrl: string, useProxy: boolean = false) => {
   // In production, try direct API call first
   // Coinalyze may or may not allow requests from Vercel domain
-  
+
   if (!useProxy || isProduction) {
     // Direct API call
     try {
@@ -140,8 +140,8 @@ const fetchWithProxy = async (targetUrl: string, useProxy: boolean = false) => {
 
   // Use local proxy server for APIs without CORS support
   const proxyUrl = `http://localhost:3001${targetUrl.replace('https://api.coinalyze.net', '')}`;
-  
-  const response = await axios.get(proxyUrl, { 
+
+  const response = await axios.get(proxyUrl, {
     timeout: 30000
   });
   return response.data;
@@ -214,10 +214,10 @@ export const liquidationsApi = {
     // Extract unique symbols from liquidation data - use params only (Coinalyze API doesn't return symbol in data)
     const symbolList = symbols.split(',');
     console.log('[DEBUG] Symbol list from params:', symbolList);
-    
+
     // Fetch current prices from Binance for all symbols
     const binancePrices = await fetchMultipleBinancePrices(symbolList);
-    
+
     console.log('[API] Fetched Binance prices for liquidations:', binancePrices);
 
     let transformedData: Liquidation[] = liquidationList.map(item => {
@@ -318,6 +318,41 @@ export const liquidationsApi = {
       }
     };
   },
+
+  getSymbols: async (): Promise<{ symbol: string; name: string; baseAsset: string }[]> => {
+    const popularNames: Record<string, string> = {
+      'BTC': 'Bitcoin', 'ETH': 'Ethereum', 'SOL': 'Solana', 'XRP': 'Ripple',
+      'ADA': 'Cardano', 'DOGE': 'Dogecoin', 'DOT': 'Polkadot', 'MATIC': 'Polygon',
+      'LINK': 'Chainlink', 'PEPE': 'Pepe', 'WIF': 'dogwifhat', 'BONK': 'Bonk',
+      'SUI': 'Sui', 'APT': 'Aptos', 'OP': 'Optimism', 'ARB': 'Arbitrum',
+      'AVAX': 'Avalanche', 'BNB': 'Binance Coin'
+    };
+
+    try {
+      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo', { timeout: 10000 });
+      const symbolData = response.data.symbols
+        .filter((s: any) => s.quoteAsset === 'USDT' && s.status === 'TRADING')
+        .map((s: any) => {
+          const base = s.baseAsset;
+          const name = popularNames[base] || base;
+          return {
+            symbol: `${s.symbol}_PERP.A`,
+            name: name,
+            baseAsset: base
+          };
+        });
+
+      return symbolData.sort((a: any, b: any) => a.name.localeCompare(b.name));
+    } catch (error) {
+      console.error('[API] Error fetching symbols from Binance:', error);
+      return [
+        { symbol: 'BTCUSDT_PERP.A', name: 'Bitcoin', baseAsset: 'BTC' },
+        { symbol: 'ETHUSDT_PERP.A', name: 'Ethereum', baseAsset: 'ETH' },
+        { symbol: 'SOLUSDT_PERP.A', name: 'Solana', baseAsset: 'SOL' },
+        { symbol: 'XRPUSDT_PERP.A', name: 'Ripple', baseAsset: 'XRP' }
+      ];
+    }
+  },
 };
 
 // Prices (Binance/CoinGecko)
@@ -328,7 +363,7 @@ export const pricesApi = {
     end_date?: string;
   }): Promise<any> => {
     const symbols = params?.symbol || 'BTCUSDT_PERP.A';
-    
+
     // Normalize Coinalyze symbol format (e.g., BTCUSDT_PERP.A) to Binance format (BTCUSDT)
     const binanceSymbol = symbols.replace('_PERP.A', '').replace('PERP.A', '');
 
