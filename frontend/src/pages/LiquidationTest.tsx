@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react';
+﻿import { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react';
 import {
     RefreshCw,
     BarChart3,
-    Search,
     Calendar,
     Settings as SettingsIcon,
     Activity,
@@ -12,7 +11,10 @@ import {
     Clock,
     Download,
     Upload,
-    RotateCcw
+    RotateCcw,
+    ChevronDown,
+    ChevronRight,
+    Search
 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { useCacheData } from '@/hooks/useCacheData';
@@ -20,121 +22,8 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { format } from 'date-fns';
 import { liquidationsApi, pricesApi } from '@/services/api';
 import { exportToCSV, exportToJSON, importFromCSV, importFromJSON, generateExportFilename } from '@/utils/exportImport';
-import {
-    Chart as ChartJS,
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    BarElement,
-    BarController,
-    LineController,
-    ScatterController,
-    Title,
-    Tooltip as ChartTooltip,
-    Legend as ChartLegend,
-    ChartData,
-    ChartOptions,
-} from 'chart.js';
-import zoomPlugin from 'chartjs-plugin-zoom';
-import { Chart } from 'react-chartjs-2';
-
-// Custom crosshair plugin with axis labels
-const crosshairPlugin = {
-    id: 'crosshair',
-    afterDraw: (chart: any) => {
-        if (chart.tooltip?._active?.length) {
-            const { ctx, chartArea, scales } = chart;
-            const activePoint = chart.tooltip._active[0];
-            const { x, y } = activePoint.element;
-            const horizontal = chart.options.indexAxis === 'y';
-
-            ctx.save();
-
-            // Draw crosshair lines
-            ctx.beginPath();
-            ctx.setLineDash([5, 5]);
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = 'rgba(148, 163, 184, 0.8)'; // slate-400
-
-            ctx.moveTo(x, chartArea.top);
-            ctx.lineTo(x, chartArea.bottom);
-            ctx.moveTo(chartArea.left, y);
-            ctx.lineTo(chartArea.right, y);
-            ctx.stroke();
-
-            // Draw axis labels (bubbles)
-            const drawLabel = (scale: any, value: number, isX: boolean) => {
-                const label = scale.getLabelForValue(value);
-                if (!label) return;
-
-                ctx.font = 'bold 11px Inter, sans-serif';
-                const textMetrics = ctx.measureText(label);
-                const padding = 6;
-                const width = textMetrics.width + padding * 2;
-                const height = 20;
-
-                let rectX, rectY;
-                if (isX) {
-                    rectX = x - width / 2;
-                    rectY = chartArea.bottom;
-                } else {
-                    rectX = chartArea.left - width;
-                    rectY = y - height / 2;
-                }
-
-                // Background bubble
-                ctx.fillStyle = '#1e293b'; // slate-900
-                ctx.beginPath();
-                if (ctx.roundRect) {
-                    ctx.roundRect(rectX, rectY, width, height, 4);
-                } else {
-                    ctx.rect(rectX, rectY, width, height);
-                }
-                ctx.fill();
-
-                // Text
-                ctx.fillStyle = '#f1f5f9'; // slate-50
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(label, rectX + width / 2, rectY + height / 2);
-            };
-
-            // Values for labels
-            if (scales.x && scales.y) {
-                // Label for scale that represents categories (Prices/Intervals)
-                const categoryScale = horizontal ? scales.y : scales.x;
-                const categoryValue = categoryScale.getValueForPixel(horizontal ? y : x);
-                drawLabel(categoryScale, categoryValue, !horizontal);
-
-                // Label for scale that represents values (Volumes)
-                const valueScale = horizontal ? scales.x : scales.y;
-                const pointValue = chart.data.datasets[activePoint.datasetIndex].data[activePoint.index];
-                const valuePixels = valueScale.getPixelForValue(pointValue);
-                drawLabel(valueScale, pointValue, horizontal);
-            }
-
-            ctx.restore();
-        }
-    }
-};
-
-// Register Chart.js components
-ChartJS.register(
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    BarElement,
-    BarController,
-    LineController,
-    ScatterController,
-    Title,
-    ChartTooltip,
-    ChartLegend,
-    zoomPlugin,
-    crosshairPlugin
-);
+import ReactECharts from 'echarts-for-react';
+import type { EChartsOption } from 'echarts';
 
 interface HistoricalLiquidation {
     timestamp: number;
@@ -143,6 +32,9 @@ interface HistoricalLiquidation {
     total_volume: number;
     long_short_ratio: number;
     price: number;
+    symbol?: string; // Optional: used for multi-asset breakdown
+    original_price?: number; // Price of the asset before normalization
+    symbolVolumes?: Record<string, { long: number; short: number; avgOriginalPrice: number }>; // For aggregated data
 }
 
 // Liquidation Chart Component
@@ -194,6 +86,7 @@ interface LiquidationChartProps {
     showSD3?: boolean;
     horizontal?: boolean;
     symbol: string;
+    tooltipCurrency: 'usd' | 'btc';
 }
 
 const LiquidationChart = memo(function LiquidationChart({
@@ -213,22 +106,46 @@ const LiquidationChart = memo(function LiquidationChart({
     showSD3 = true,
     horizontal = false,
     symbol,
-}: LiquidationChartProps) {
-    const chartRef = useRef<any>(null);
+    tooltipCurrency = 'usd',
+}: Omit<LiquidationChartProps, 'formatCurrency'> & { formatCurrency: (v: number) => string }) {
+    const chartRef = useRef<ReactECharts>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [clickedIndex, setClickedIndex] = useState<number | null>(null);
+    const [tooltipPos, setTooltipPos] = useState<{ x: number, y: number } | null>(null);
 
     // Zoom/Pan persistence keys per symbol
     const zoomKeys = useMemo(() => ({
-        min: `liquidation_chart_zoom_min_${symbol}`,
-        max: `liquidation_chart_zoom_max_${symbol}`,
+        start: `liquidation_chart_zoom_start_${symbol}`,
+        end: `liquidation_chart_zoom_end_${symbol}`,
     }), [symbol]);
 
     const resetZoom = useCallback(() => {
         if (chartRef.current) {
-            chartRef.current.resetZoom();
-            localStorage.removeItem(zoomKeys.min);
-            localStorage.removeItem(zoomKeys.max);
+            const chart = chartRef.current.getEchartsInstance();
+            chart.dispatchAction({
+                type: 'dataZoom',
+                start: 0,
+                end: 100
+            });
+            localStorage.removeItem(zoomKeys.start);
+            localStorage.removeItem(zoomKeys.end);
         }
     }, [zoomKeys]);
+
+    // Handle click outside to close sticky tooltip
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (clickedIndex !== null && containerRef.current) {
+                // If the click target is NOT within our component's container
+                if (!containerRef.current.contains(event.target as Node)) {
+                    setClickedIndex(null);
+                }
+            }
+        };
+
+        window.addEventListener('mousedown', handleClickOutside);
+        return () => window.removeEventListener('mousedown', handleClickOutside);
+    }, [clickedIndex]);
 
     // Sort data for proper axis alignment
     const sortedData = useMemo(() => [...data].sort((a, b) => a.price - b.price), [data]);
@@ -237,210 +154,551 @@ const LiquidationChart = memo(function LiquidationChart({
     const yMax = useMemo(() => {
         if (sortedData.length === 0) return 0;
         const maxVol = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
-        return maxVol * 1.1;
+        return Math.max(1, maxVol * 1.1); // Ensure at least 1
     }, [sortedData]);
 
-    const labels = useMemo(() => sortedData.map(d => formatCurrency(d.price)), [sortedData, formatCurrency]);
+    const labels = useMemo(() => sortedData.map(d => d.price), [sortedData]);
 
-    // Binary search helper to find the index of the closest price
-    const findClosestIndex = useCallback((targetPrice: number) => {
-        if (sortedData.length === 0) return 0;
-        let low = 0;
-        let high = sortedData.length - 1;
+    const formatTooltipVolume = useCallback((value: number, referencePrice: number) => {
+        if (tooltipCurrency === 'btc') {
+            const btcValue = referencePrice > 0 ? value / referencePrice : 0;
+            return `₿${btcValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        } else {
+            const absValue = Math.abs(value);
+            let formatted = '';
 
-        while (low < high) {
-            const mid = Math.floor((low + high) / 2);
-            if (sortedData[mid].price < targetPrice) {
-                low = mid + 1;
+            if (absValue >= 1e9) {
+                formatted = (value / 1e9).toFixed(2) + 'B';
+            } else if (absValue >= 1e6) {
+                formatted = (value / 1e6).toFixed(2) + 'M';
+            } else if (absValue >= 1e3) {
+                formatted = (value / 1e3).toFixed(1) + 'k';
             } else {
-                high = mid;
+                formatted = value.toFixed(2);
+            }
+            return `$${formatted}`;
+        }
+    }, [tooltipCurrency]);
+
+    const [brushedVolumes, setBrushedVolumes] = useState<{ long: number; short: number; total: number } | null>(null);
+
+    const option: EChartsOption = useMemo(() => {
+        const markLines: any[] = [];
+
+        // Grid Lines
+        if (gridLineInterval > 0 && sortedData.length > 0) {
+            const minP = sortedData[0].price;
+            const maxP = sortedData[sortedData.length - 1].price;
+            const first = Math.ceil(minP / gridLineInterval) * gridLineInterval;
+            const last = Math.floor(maxP / gridLineInterval) * gridLineInterval;
+
+            for (let m = first; m <= last; m += gridLineInterval) {
+                markLines.push({
+                    xAxis: horizontal ? undefined : String(m),
+                    yAxis: horizontal ? String(m) : undefined,
+                    lineStyle: {
+                        color: lineStyles.thousandLines.color,
+                        width: lineStyles.thousandLines.width,
+                        type: 'solid',
+                    },
+                    label: { show: false },
+                    tooltip: { show: false }
+                });
             }
         }
 
-        // Check if the previous element is closer
-        if (low > 0 && Math.abs(sortedData[low - 1].price - targetPrice) < Math.abs(sortedData[low].price - targetPrice)) {
-            return low - 1;
-        }
-        return low;
-    }, [sortedData]);
-
-    // Grid lines dataset
-    const verticalLinesDataset = useMemo(() => {
-        if (sortedData.length === 0 || gridLineInterval <= 0) return null;
-        const minP = sortedData[0].price;
-        const maxP = sortedData[sortedData.length - 1].price;
-        const first = Math.ceil(minP / gridLineInterval) * gridLineInterval;
-        const last = Math.floor(maxP / gridLineInterval) * gridLineInterval;
-        const lineData: any[] = [];
-
-        for (let m = first; m <= last; m += gridLineInterval) {
-            const idx = findClosestIndex(m);
-            const label = labels[idx];
-            if (horizontal) {
-                lineData.push({ x: 0, y: label }, { x: yMax, y: label }, { x: null, y: null });
-            } else {
-                lineData.push({ x: label, y: 0 }, { x: label, y: yMax }, { x: null, y: null });
-            }
-        }
-
-        return {
-            type: 'line' as const,
-            label: '',
-            data: lineData,
-            borderColor: lineStyles.thousandLines.color,
-            backgroundColor: 'transparent',
-            borderWidth: lineStyles.thousandLines.width,
-            borderDash: lineStyles.thousandLines.dash,
-            pointRadius: 0,
-            pointHoverRadius: 0,
-            yAxisID: horizontal ? 'y' : 'y-markers',
-            xAxisID: horizontal ? 'x-markers' : 'x',
-            order: 0,
-            spanGaps: false,
-        };
-    }, [sortedData, labels, yMax, lineStyles.thousandLines, gridLineInterval, horizontal]);
-
-    // Main datasets
-    const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
-        const datasets: any[] = groupBy === 'stacked'
-            ? [{ type: 'bar' as const, label: 'Total Volume', data: sortedData.map(d => d.long_volume + d.short_volume), backgroundColor: '#3b82f6', borderRadius: 4 }]
-            : [
-                { type: 'bar' as const, label: 'Longs', data: sortedData.map(d => d.long_volume), backgroundColor: '#10b981', borderRadius: 4 },
-                { type: 'bar' as const, label: 'Shorts', data: sortedData.map(d => d.short_volume), backgroundColor: '#ef4444', borderRadius: 4 }
-            ];
-
-        if (verticalLinesDataset) datasets.push(verticalLinesDataset);
-
-        if (currentPrice && sortedData.length > 0) {
-            const idx = findClosestIndex(currentPrice);
-            const label = labels[idx];
-            datasets.push({
-                type: 'scatter' as const,
-                label: '',
-                data: horizontal ? [{ x: 0, y: label }, { x: yMax, y: label }] : [{ x: label, y: 0 }, { x: label, y: yMax }],
-                borderColor: lineStyles.btcQuoteLine.color,
-                backgroundColor: 'transparent',
-                borderWidth: lineStyles.btcQuoteLine.width,
-                borderDash: lineStyles.btcQuoteLine.dash,
-                pointRadius: 0,
-                pointHoverRadius: 0,
-                yAxisID: horizontal ? 'y' : 'y-markers',
-                xAxisID: horizontal ? 'x-markers' : 'x',
-                order: 0,
-                showLine: true,
+        // Current Price Line
+        if (currentPrice !== null) {
+            markLines.push({
+                xAxis: horizontal ? undefined : String(currentPrice),
+                yAxis: horizontal ? String(currentPrice) : undefined,
+                lineStyle: {
+                    color: lineStyles.btcQuoteLine.color,
+                    width: lineStyles.btcQuoteLine.width,
+                    type: 'dashed',
+                },
+                label: { show: false },
+                tooltip: { show: false }
             });
         }
 
+        // Standard Deviations Lines & Areas
+        const markAreas: any[] = [];
         if (stdDevData && sortedData.length > 0) {
-            const fl = (p: number) => labels[findClosestIndex(p)];
-
             const { mean, regions } = stdDevData;
-            const markerAxisConfig = horizontal ? { yAxisID: 'y', xAxisID: 'x-markers' } : { yAxisID: 'y-markers', xAxisID: 'x' };
 
             if (showMeanLine) {
-                const ml = fl(mean);
-                datasets.push({ type: 'scatter' as const, label: 'Média', data: horizontal ? [{ x: 0, y: ml }, { x: yMax, y: ml }] : [{ x: ml, y: 0 }, { x: ml, y: yMax }], borderColor: '#8b5cf6', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, ...markerAxisConfig, order: 0, showLine: true });
+                markLines.push({
+                    xAxis: horizontal ? undefined : String(mean),
+                    yAxis: horizontal ? String(mean) : undefined,
+                    lineStyle: { color: '#8b5cf6', width: 2, type: 'solid' },
+                    label: { show: false },
+                    tooltip: { show: false }
+                });
             }
 
-            const addSD = (label: string, pMin: number, pMax: number, color: string, dash: number[]) => {
-                const lA = fl(pMin), lB = fl(pMax);
-                datasets.push({ type: 'scatter' as const, label, data: horizontal ? [{ x: 0, y: lA }, { x: yMax, y: lA }, { x: null, y: null }, { x: 0, y: lB }, { x: yMax, y: lB }] : [{ x: lA, y: 0 }, { x: lA, y: yMax }, { x: null, y: null }, { x: lB, y: 0 }, { x: lB, y: yMax }], borderColor: color, backgroundColor: 'transparent', borderWidth: 2, borderDash: dash, pointRadius: 0, ...markerAxisConfig, order: 0, showLine: true, spanGaps: false });
+            const addSD = (pMin: number, pMax: number, color: string, opacity: number = 0.05) => {
+                if (pMin > 0 && pMax > 0) {
+                    // Lines
+                    markLines.push({ xAxis: horizontal ? undefined : String(pMin), yAxis: horizontal ? String(pMin) : undefined, lineStyle: { color, width: 1.5, type: 'dashed' }, label: { show: false }, tooltip: { show: false } });
+                    markLines.push({ xAxis: horizontal ? undefined : String(pMax), yAxis: horizontal ? String(pMax) : undefined, lineStyle: { color, width: 1.5, type: 'dashed' }, label: { show: false }, tooltip: { show: false } });
+
+                    // Areas
+                    markAreas.push([{
+                        name: 'SD Zone',
+                        xAxis: horizontal ? undefined : String(pMin),
+                        yAxis: horizontal ? String(pMin) : undefined,
+                        itemStyle: { color, opacity }
+                    }, {
+                        xAxis: horizontal ? undefined : String(pMax),
+                        yAxis: horizontal ? String(pMax) : undefined,
+                    }]);
+                }
             };
 
-            if (showSD0_25) addSD('±0.25σ', regions.sd0_25[0], regions.sd0_25[1], '#ec4899', [2, 2]);
-            if (showSD0_5) addSD('±0.5σ', regions.sd0_5[0], regions.sd0_5[1], '#06b6d4', [3, 3]);
-            if (showSD1) addSD('±1σ', regions.sd1[0], regions.sd1[1], '#10b981', [5, 5]);
-            if (showSD2) addSD('±2σ', regions.sd2[0], regions.sd2[1], '#f59e0b', [8, 4]);
-            if (showSD3) addSD('±3σ', regions.sd3[0], regions.sd3[1], '#ef4444', [10, 5, 2, 5]);
+            if (showSD0_25) addSD(regions.sd0_25[0], regions.sd0_25[1], '#ec4899', 0.08);
+            if (showSD0_5) addSD(regions.sd0_5[0], regions.sd0_5[1], '#06b6d4', 0.07);
+            if (showSD1) addSD(regions.sd1[0], regions.sd1[1], '#10b981', 0.06);
+            if (showSD2) addSD(regions.sd2[0], regions.sd2[1], '#f59e0b', 0.05);
+            if (showSD3) addSD(regions.sd3[0], regions.sd3[1], '#ef4444', 0.04);
         }
 
-        return { labels, datasets };
-    }, [sortedData, labels, groupBy, formatCurrency, currentPrice, verticalLinesDataset, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, horizontal]);
+        const series: any[] = groupBy === 'stacked'
+            ? [{
+                name: 'Total Volume',
+                type: 'bar',
+                data: sortedData.map(d => d.long_volume + d.short_volume),
+                itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] },
+                markLine: markLines.length > 0 ? {
+                    symbol: ['none', 'none'],
+                    data: markLines,
+                    animation: false
+                } : undefined
+            }]
+            : [
+                {
+                    name: 'Longs',
+                    type: 'bar',
+                    data: sortedData.map(d => d.long_volume),
+                    itemStyle: { color: '#10b981', borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] },
+                    stack: groupBy === 'combined' ? 'total' : undefined,
+                    markLine: markLines.length > 0 ? {
+                        symbol: ['none', 'none'],
+                        data: markLines,
+                        silent: true,
+                        animation: false
+                    } : undefined,
+                    markArea: markAreas.length > 0 ? {
+                        silent: true,
+                        data: markAreas,
+                        animation: false
+                    } : undefined
+                },
+                {
+                    name: 'Shorts',
+                    type: 'bar',
+                    data: sortedData.map(d => d.short_volume),
+                    itemStyle: { color: '#ef4444', borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] },
+                    stack: groupBy === 'combined' ? 'total' : undefined
+                }
+            ];
 
-    const chartOptions: ChartOptions<'bar' | 'line'> = useMemo(() => {
-        const savedMin = localStorage.getItem(zoomKeys.min);
-        const savedMax = localStorage.getItem(zoomKeys.max);
-        const persistedZoom = (savedMin && savedMax) ? (() => {
-            const minIdx = labels.indexOf(savedMin);
-            const maxIdx = labels.indexOf(savedMax);
-            return (minIdx !== -1 && maxIdx !== -1) ? { min: minIdx, max: maxIdx } : null;
-        })() : null;
+        const savedStart = localStorage.getItem(zoomKeys.start);
+        const savedEnd = localStorage.getItem(zoomKeys.end);
+
+        const categoryAxis = {
+            type: 'category' as const,
+            data: labels.map(String),
+            inverse: !horizontal, // Invert Y when vertical (price on X is rare but follows same logic)
+            axisLabel: {
+                color: '#64748b',
+                formatter: (val: string) => formatCurrency(Number(val))
+            },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            splitLine: { show: false }
+        };
+
+        const valueAxis = {
+            type: 'value' as const,
+            min: 0,
+            max: yMax,
+            axisLabel: {
+                color: '#64748b',
+                formatter: (val: number) => formatCurrency(val)
+            },
+            splitLine: { show: false }
+        };
 
         return {
-            animation: false as const,
-            normalized: true,
-            responsive: true,
-            maintainAspectRatio: false,
-            ...(horizontal ? { indexAxis: 'y' as const } : {}),
-            interaction: { mode: 'index', intersect: false },
-            plugins: {
-                legend: { display: groupBy !== 'stacked', position: 'top', labels: { color: '#64748b', usePointStyle: true, padding: 20 } },
-                crosshair: { enabled: true },
-                tooltip: {
-                    enabled: true,
-                    backgroundColor: '#1e293b',
-                    titleColor: '#f1f5f9',
-                    bodyColor: '#f1f5f9',
-                    borderColor: '#475569',
-                    borderWidth: 1,
-                    padding: 12,
-                    cornerRadius: 8,
-                    callbacks: {
-                        title: (items: any) => {
-                            if (!items.length) return '';
-                            const d = sortedData[items[0].dataIndex];
-                            if (!d) return '';
-                            if (priceInterval > 0 || d.timestamp < 1000000000) return `Price Range: ${formatCurrency(d.timestamp)} - ${formatCurrency(d.timestamp + priceInterval)}`;
-                            return `Price: ${formatCurrency(d.price)} | ${new Date(d.timestamp * 1000).toLocaleDateString()}`;
-                        },
-                        label: (ctx: any) => {
-                            const val = horizontal ? (ctx.parsed.x ?? 0) : (ctx.parsed.y ?? 0);
-                            return `  ${ctx.dataset.label}: ${formatCurrency(val)}`;
-                        },
-                        afterBody: (items: any) => {
-                            const d = sortedData[items[0].dataIndex];
-                            if (!d) return [];
-                            return [`  ─────────────`, `  Total: ${formatCurrency(d.long_volume + d.short_volume)}`, `  L/S Ratio: ${d.long_short_ratio.toFixed(2)}`];
+            grid: {
+                top: 40,
+                right: 20,
+                bottom: 20,
+                left: 60,
+                containLabel: true
+            },
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: {
+                    type: 'cross',
+                    label: {
+                        backgroundColor: '#1e293b',
+                        color: '#f1f5f9',
+                        formatter: (params: any) => {
+                            if (params.axisDimension === (horizontal ? 'y' : 'x')) {
+                                return formatCurrency(Number(params.value));
+                            }
+                            return params.value.toLocaleString();
                         }
                     }
                 },
-                zoom: {
-                    pan: { enabled: true, mode: horizontal ? 'y' : 'x' },
-                    zoom: {
-                        wheel: { enabled: true },
-                        pinch: { enabled: true },
-                        mode: horizontal ? 'y' : 'x',
-                        onZoomComplete: ({ chart }: { chart: any }) => {
-                            const s = horizontal ? chart.scales.y : chart.scales.x;
-                            const minL = labels[Math.round(s.min)], maxL = labels[Math.round(s.max)];
-                            if (minL && maxL) { localStorage.setItem(zoomKeys.min, minL); localStorage.setItem(zoomKeys.max, maxL); }
-                        },
-                        onPanComplete: ({ chart }: { chart: any }) => {
-                            const s = horizontal ? chart.scales.y : chart.scales.x;
-                            const minL = labels[Math.round(s.min)], maxL = labels[Math.round(s.max)];
-                            if (minL && maxL) { localStorage.setItem(zoomKeys.min, minL); localStorage.setItem(zoomKeys.max, maxL); }
-                        },
-                    },
+                backgroundColor: '#1e293b',
+                borderColor: 'rgba(71, 85, 105, 0.2)',
+                borderWidth: 1,
+                padding: 12,
+                textStyle: {
+                    color: '#f8fafc',
+                    fontFamily: 'Inter, sans-serif'
+                },
+                formatter: (params: any) => {
+                    const dataIndex = params[0].dataIndex;
+                    const d = sortedData[dataIndex];
+                    if (!d) return '';
+
+                    const title = (priceInterval > 0 || d.timestamp < 1000000000)
+                        ? `Range: ${formatCurrency(d.timestamp)} - ${formatCurrency(d.timestamp + priceInterval)}`
+                        : `Price: ${formatCurrency(d.price)} | ${new Date(d.timestamp * 1000).toLocaleDateString()}`;
+
+                    const total = d.long_volume + d.short_volume;
+                    let innerHtml = `
+                        <div style="min-width: 220px; font-family: 'Inter', sans-serif; background: #1e293b; color: #f1f5f9; padding: 2px;">
+                            <div style="font-size: 11px; font-weight: 700; color: #94a3b8; margin-bottom: 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.1); padding-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">${title}</div>
+                            
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                <span style="color: #10b981; font-weight: 600; font-size: 13px;">▲ Longs:</span> 
+                                <span style="font-weight: 700; font-size: 13px;">${formatTooltipVolume(d.long_volume, d.price)}</span>
+                            </div>
+                            
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <span style="color: #ef4444; font-weight: 600; font-size: 13px;">▼ Shorts:</span> 
+                                <span style="font-weight: 700; font-size: 13px;">${formatTooltipVolume(d.short_volume, d.price)}</span>
+                            </div>
+
+                            <div style="background: rgba(15, 23, 42, 0.5); border-radius: 6px; padding: 10px; margin-top: 10px; border: 1px solid rgba(148, 163, 184, 0.1);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">TOTAL LIQ:</span> 
+                                    <strong style="color: #3b82f6; font-size: 13px;">${formatTooltipVolume(total, d.price)}</strong>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">L/S RATIO:</span> 
+                                    <strong style="color: #f1f5f9; font-size: 13px;">${d.long_short_ratio.toFixed(2)}</strong>
+                                </div>
+                            </div>
+                    `;
+
+                    if (d.symbolVolumes && Object.keys(d.symbolVolumes).length > 1) {
+                        innerHtml += `<div style="margin: 15px 0 8px 0; font-weight: 800; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.1em;">Detalhamento de Ativos</div>`;
+                        innerHtml += `<div class="tooltip-scroll-container" style="max-height: 200px; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.3) transparent;">`;
+
+                        Object.entries(d.symbolVolumes)
+                            .sort(([, a]: any, [, b]: any) => (b.long + b.short) - (a.long + a.short))
+                            .forEach(([symbol, vol]: [string, any]) => {
+                                const assetTotal = vol.long + vol.short;
+                                if (assetTotal > 0) {
+                                    const sName = symbol.split('USDT')[0].replace('_PERP.A', '');
+                                    const share = ((assetTotal / total) * 100).toFixed(0);
+
+                                    innerHtml += `
+                                        <div style="margin-bottom: 10px; border-left: 3px solid rgba(59, 130, 246, 0.5); padding-left: 12px;">
+                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                                                <span style="font-weight: 700; color: #f1f5f9; font-size: 12px;">${sName}</span> 
+                                                <span style="font-size: 10px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; padding: 2px 6px; border-radius: 4px; font-weight: 700;">${share}%</span>
+                                            </div>
+                                            <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-bottom: 4px;">
+                                                <span>Volume:</span> 
+                                                <span style="color: #cbd5e1; font-weight: 600;">${formatTooltipVolume(assetTotal, d.price)}</span>
+                                            </div>
+                                            <div style="display: flex; gap: 8px; font-size: 10px;">
+                                                <span style="color: #34d399; background: rgba(52, 211, 153, 0.1); padding: 1px 4px; border-radius: 3px;">▲ ${formatTooltipVolume(vol.long, d.price)}</span>
+                                                <span style="color: #f87171; background: rgba(248, 113, 113, 0.1); padding: 1px 4px; border-radius: 3px;">▼ ${formatTooltipVolume(vol.short, d.price)}</span>
+                                            </div>
+                                        </div>`;
+                                }
+                            });
+                        innerHtml += `</div>`;
+                    }
+                    innerHtml += '</div>';
+                    return innerHtml;
                 }
             },
-            scales: horizontal ? {
-                y: { reverse: true, stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b' }, ...(persistedZoom ? { min: persistedZoom.min, max: persistedZoom.max } : {}) },
-                x: { stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b', callback: (v: any) => formatCurrency(Number(v)) } },
-                'x-markers': { display: false, min: 0, max: yMax, axis: 'x' }
-            } : {
-                x: { stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b' }, ...(persistedZoom ? { min: persistedZoom.min, max: persistedZoom.max } : {}) },
-                y: { stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b', callback: (v: any) => formatCurrency(Number(v)) } },
-                'y-markers': { display: false, min: 0, max: yMax }
-            }
+            legend: {
+                show: groupBy !== 'stacked',
+                top: 0,
+                left: 'center',
+                textStyle: { color: '#64748b' },
+                icon: 'circle'
+            },
+            toolbox: {
+                show: true,
+                right: 20,
+                top: 0,
+                feature: {
+                    brush: {
+                        type: ['rect', 'clear'],
+                        title: { rect: 'Seleção', clear: 'Limpar Seleção' }
+                    },
+                    dataView: { show: true, readOnly: true, title: 'Ver Dados', lang: ['Visualização de Dados', 'Fechar', 'Atualizar'] },
+                    saveAsImage: { show: true, title: 'Salvar Imagem', type: 'png' },
+                    restore: { show: true, title: 'Reset' }
+                },
+                iconStyle: {
+                    borderColor: '#64748b'
+                }
+            },
+            brush: {
+                toolbox: ['rect', 'clear'],
+                xAxisIndex: horizontal ? undefined : 0,
+                yAxisIndex: horizontal ? 0 : undefined,
+                brushStyle: {
+                    borderWidth: 1,
+                    color: 'rgba(59, 130, 246, 0.2)',
+                    borderColor: 'rgba(59, 130, 246, 0.5)'
+                }
+            },
+            visualMap: {
+                show: false, // Keep it internal for color calculation without showing the legend
+                min: 0,
+                max: yMax,
+                dimension: horizontal ? 0 : 1, // Use volume dimension
+                inRange: {
+                    colorAlpha: [0.7, 1] // Subtle alpha increase for higher volumes
+                }
+            },
+            xAxis: horizontal ? valueAxis : categoryAxis,
+            yAxis: horizontal ? categoryAxis : valueAxis,
+            dataZoom: [
+                {
+                    type: 'inside',
+                    xAxisIndex: horizontal ? undefined : 0,
+                    yAxisIndex: horizontal ? 0 : undefined,
+                    start: savedStart ? Number(savedStart) : 0,
+                    end: savedEnd ? Number(savedEnd) : 100
+                },
+                {
+                    type: 'slider',
+                    show: true,
+                    xAxisIndex: horizontal ? undefined : 0,
+                    yAxisIndex: horizontal ? 0 : undefined,
+                    bottom: 0,
+                    height: 20,
+                    borderColor: 'transparent',
+                    fillerColor: 'rgba(59, 130, 246, 0.1)',
+                    handleIcon: 'path://M10.7,11.9v-1.3H9.3v1.3c-4.9,0.3-8.8,4.4-8.8,9.4c0,5,3.9,9.1,8.8,9.4v1.3h1.3v-1.3c4.9-0.3,8.8-4.4,8.8-9.4C19.5,16.3,15.6,12.2,10.7,11.9z M13.3,24.4H6.7V23h6.6V24.4z M13.3,19.6H6.7v-1.4h6.6V19.6z',
+                    handleSize: '80%',
+                    handleStyle: {
+                        color: '#3b82f6',
+                        shadowBlur: 3,
+                        shadowColor: 'rgba(0, 0, 0, 0.6)',
+                        shadowOffsetX: 2,
+                        shadowOffsetY: 2
+                    },
+                    textStyle: { color: '#64748b' },
+                    start: savedStart ? Number(savedStart) : 0,
+                    end: savedEnd ? Number(savedEnd) : 100
+                }
+            ],
+            series
         };
-    }, [horizontal, groupBy, labels, zoomKeys, sortedData, priceInterval, formatCurrency, yMax]);
+    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval]);
+
+    const onEvents = useMemo(() => ({
+        datazoom: (params: any) => {
+            if (chartRef.current) {
+                const chart = chartRef.current.getEchartsInstance();
+                const option = chart.getOption() as any;
+                const start = option.dataZoom[0].start;
+                const end = option.dataZoom[0].end;
+                localStorage.setItem(zoomKeys.start, start.toString());
+                localStorage.setItem(zoomKeys.end, end.toString());
+            }
+        },
+        click: (params: any) => {
+            // Check if we clicked on a bar (Longs, Shorts, or Total Volume)
+            if (params.componentType === 'series' && params.seriesType === 'bar') {
+                const event = params.event.event;
+                // Use offsetX/Y for positioning relative to the container
+                setTooltipPos({ x: event.offsetX, y: event.offsetY });
+                setClickedIndex(params.dataIndex);
+            }
+        },
+        brushselected: (params: any) => {
+            const brushed = params.batch[0].selected;
+            if (!brushed || brushed.length === 0) {
+                setBrushedVolumes(null);
+                return;
+            }
+
+            let longVol = 0;
+            let shortVol = 0;
+
+            brushed.forEach((s: any) => {
+                if (s.dataIndex && s.dataIndex.length > 0) {
+                    s.dataIndex.forEach((idx: number) => {
+                        const d = sortedData[idx];
+                        if (d) {
+                            longVol += d.long_volume;
+                            shortVol += d.short_volume;
+                        }
+                    });
+                }
+            });
+
+            if (longVol > 0 || shortVol > 0) {
+                setBrushedVolumes({ long: longVol, short: shortVol, total: longVol + shortVol });
+            } else {
+                setBrushedVolumes(null);
+            }
+        }
+    }), [zoomKeys, sortedData]); // Added sortedData to deps to ensure correct index mapping
+
+    const renderStickyTooltip = () => {
+        if (clickedIndex === null || !tooltipPos) return null;
+        const d = sortedData[clickedIndex];
+        if (!d) return null;
+
+        const title = (priceInterval > 0 || d.timestamp < 1000000000)
+            ? `Range: ${formatCurrency(d.timestamp)} - ${formatCurrency(d.timestamp + priceInterval)}`
+            : `Price: ${formatCurrency(d.price)} | ${new Date(d.timestamp * 1000).toLocaleDateString()}`;
+
+        const total = d.long_volume + d.short_volume;
+
+        return (
+            <div
+                className="absolute z-50 pointer-events-auto shadow-2xl border border-slate-700/50 rounded-lg overflow-hidden animate-in fade-in zoom-in duration-200"
+                style={{
+                    left: tooltipPos.x + 10,
+                    top: Math.max(10, tooltipPos.y - 100),
+                    backgroundColor: '#1e293b',
+                    color: '#f1f5f9',
+                    minWidth: '240px'
+                }}
+            >
+                <div className="flex items-center justify-between px-3 py-2 bg-slate-900/50 border-b border-slate-800">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{title}</span>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); setClickedIndex(null); }}
+                        className="p-1 hover:bg-slate-800 rounded-md transition-colors"
+                    >
+                        <RefreshCw className="h-3 w-3 rotate-45 text-slate-400" />
+                    </button>
+                </div>
+
+                <div className="p-3">
+                    <div className="flex justify-between items-center mb-1.5">
+                        <span className="text-emerald-500 font-semibold text-xs">▲ Longs</span>
+                        <span className="font-bold text-sm">{formatTooltipVolume(d.long_volume, d.price)}</span>
+                    </div>
+                    <div className="flex justify-between items-center mb-3">
+                        <span className="text-red-500 font-semibold text-xs">▼ Shorts</span>
+                        <span className="font-bold text-sm">{formatTooltipVolume(d.short_volume, d.price)}</span>
+                    </div>
+
+                    <div className="bg-slate-950/40 rounded-md p-2.5 border border-slate-800/50">
+                        <div className="flex justify-between items-center mb-1">
+                            <span className="text-slate-400 text-[10px] font-bold">TOTAL LIQ</span>
+                            <span className="text-blue-400 font-bold text-xs">{formatTooltipVolume(total, d.price)}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="text-slate-400 text-[10px] font-bold">L/S RATIO</span>
+                            <span className="text-slate-200 font-bold text-xs">{d.long_short_ratio.toFixed(2)}</span>
+                        </div>
+                    </div>
+
+                    {d.symbolVolumes && Object.keys(d.symbolVolumes).length > 1 && (
+                        <>
+                            <div className="mt-4 mb-2 text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Detalhamento</div>
+                            <div className="max-height-[180px] overflow-y-auto pr-1 custom-scrollbar" style={{ maxHeight: '180px' }}>
+                                {Object.entries(d.symbolVolumes)
+                                    .sort(([, a]: any, [, b]: any) => (b.long + b.short) - (a.long + a.short))
+                                    .map(([sSymbol, vol]: [string, any]) => {
+                                        const assetTotal = vol.long + vol.short;
+                                        if (assetTotal === 0) return null;
+                                        const sName = sSymbol.split('USDT')[0].replace('_PERP.A', '');
+                                        const share = ((assetTotal / total) * 100).toFixed(0);
+                                        return (
+                                            <div key={sSymbol} className="mb-2.5 border-l-2 border-blue-500/30 pl-2.5">
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <span className="font-bold text-xs">{sName}</span>
+                                                    <span className="text-[9px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded font-bold">{share}%</span>
+                                                </div>
+                                                <div className="flex justify-between text-[11px] text-slate-400 mb-0.5">
+                                                    <span>Vol:</span>
+                                                    <span className="text-slate-300 font-medium">{formatTooltipVolume(assetTotal, d.price)}</span>
+                                                </div>
+                                                <div className="flex gap-2 text-[9px]">
+                                                    <span className="text-emerald-400/80">▲ {formatTooltipVolume(vol.long, d.price)}</span>
+                                                    <span className="text-red-400/80">▼ {formatTooltipVolume(vol.short, d.price)}</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                                }
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        );
+    };
 
     return (
-        <div className="relative w-full h-full group/chart">
-            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions as any} />
+        <div
+            ref={containerRef}
+            className="relative w-full h-full group/chart overflow-hidden"
+            onClick={(e) => {
+                // Only close if clicking the background, not the tooltip or chart elements
+                if (e.target === e.currentTarget) {
+                    setClickedIndex(null);
+                }
+            }}
+        >
+            <ReactECharts
+                ref={chartRef}
+                option={option}
+                style={{ height: '100%', width: '100%' }}
+                opts={{ renderer: 'canvas' }}
+                onEvents={onEvents}
+            />
+            {renderStickyTooltip()}
+
+            {/* Brush Volume Indicator */}
+            {brushedVolumes && (
+                <div className="absolute top-12 left-1/2 -translate-x-1/2 px-4 py-2 bg-slate-900/90 border border-blue-500/50 rounded-full shadow-2xl backdrop-blur-md z-30 animate-in fade-in slide-in-from-top-4 duration-300">
+                    <div className="flex items-center gap-4 text-[11px] font-bold">
+                        <span className="flex items-center gap-1.5 text-emerald-400">
+                            <TrendingUp className="h-3 w-3" />
+                            {formatTooltipVolume(brushedVolumes.long, (sortedData[0]?.price || 0))}
+                        </span>
+                        <div className="w-px h-3 bg-slate-700"></div>
+                        <span className="flex items-center gap-1.5 text-red-400">
+                            <TrendingDown className="h-3 w-3" />
+                            {formatTooltipVolume(brushedVolumes.short, (sortedData[0]?.price || 0))}
+                        </span>
+                        <div className="w-px h-3 bg-slate-700"></div>
+                        <span className="flex items-center gap-1.5 text-blue-400">
+                            Vol: {formatTooltipVolume(brushedVolumes.total, (sortedData[0]?.price || 0))}
+                        </span>
+                    </div>
+                </div>
+            )}
+
             <button
-                onClick={resetZoom}
-                className="absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-background/90 hover:bg-background text-foreground rounded-lg border border-border shadow-lg opacity-0 group-hover/chart:opacity-100 transition-all z-20 backdrop-blur-sm"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    resetZoom();
+                }}
+                className="absolute top-2 left-2 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-background/90 hover:bg-background text-foreground rounded-lg border border-border shadow-lg opacity-0 group-hover/chart:opacity-100 transition-all z-20 backdrop-blur-sm"
                 title="Reset Zoom & Pan"
             >
                 <RotateCcw className="h-3.5 w-3.5" />
@@ -452,7 +710,12 @@ const LiquidationChart = memo(function LiquidationChart({
 
 export function LiquidationTest() {
     const [apiKey, setApiKey] = useState(() => localStorage.getItem('coinalyze_api_key') || 'FREE');
+    const [isMultiAssetMode, setIsMultiAssetMode] = useState(() => localStorage.getItem('liquidation_test_multi_asset') === 'true');
     const [symbol, setSymbol] = useState(() => localStorage.getItem('liquidation_test_symbol') || 'BTCUSDT_PERP.A');
+    const [selectedSymbols, setSelectedSymbols] = useState<string[]>(() => {
+        const saved = localStorage.getItem('liquidation_test_selected_symbols');
+        return saved ? JSON.parse(saved) : ['BTCUSDT_PERP.A'];
+    });
     const [months, setMonths] = useState(() => Number(localStorage.getItem('liquidation_test_months')) || 36);
     const [priceInterval, setPriceInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_interval')) || 20);
     const [amountMin, setAmountMin] = useState<string>(() => localStorage.getItem('liquidation_test_amount_min') || '200');
@@ -467,6 +730,7 @@ export function LiquidationTest() {
     const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '100');
     const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '55000');
     const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '80000');
+    const [tooltipCurrency, setTooltipCurrency] = useState<'usd' | 'btc'>(() => (localStorage.getItem('liquidation_test_tooltip_currency') as 'usd' | 'btc') || 'usd');
     const [priceRefreshInterval, setPriceRefreshInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_refresh')) || 5);
     const [gridLineInterval, setGridLineInterval] = useState(() => Number(localStorage.getItem('liquidation_test_grid_line_interval')) || 1000);
     const [smartIntervalEnabled, setSmartIntervalEnabled] = useState(() => localStorage.getItem('liquidation_test_smart_interval_enabled') === 'true');
@@ -507,7 +771,8 @@ export function LiquidationTest() {
     const [minInterval, setMinInterval] = useState(() => Number(localStorage.getItem('liquidation_test_min_interval')) || 1);
     const [maxInterval, setMaxInterval] = useState(() => Number(localStorage.getItem('liquidation_test_max_interval')) || 10000);
     const [validationError, setValidationError] = useState<string | null>(null);
-    const [availableSymbols, setAvailableSymbols] = useState<{ symbol: string; name: string; baseAsset: string }[]>([]);
+    const [availableSymbols, setAvailableSymbols] = useState<{ symbol: string; name: string; baseAsset: string; rank?: number; marketCap?: number; category: 'Perpetual' | 'Futures' | 'Spot' }[]>([]);
+    const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
     const [symbolSearch, setSymbolSearch] = useState('');
     const [isSymbolOpen, setIsSymbolOpen] = useState(false);
     const symbolRef = useRef<HTMLDivElement>(null);
@@ -541,8 +806,20 @@ export function LiquidationTest() {
     }, [apiKey]);
 
     useEffect(() => {
+        localStorage.setItem('liquidation_test_multi_asset', String(isMultiAssetMode));
+    }, [isMultiAssetMode]);
+
+    useEffect(() => {
         localStorage.setItem('liquidation_test_symbol', symbol);
     }, [symbol]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_selected_symbols', JSON.stringify(selectedSymbols));
+    }, [selectedSymbols]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_tooltip_currency', tooltipCurrency);
+    }, [tooltipCurrency]);
 
     // Fetch available symbols on mount
     useEffect(() => {
@@ -726,41 +1003,61 @@ export function LiquidationTest() {
     }, [maxInterval]);
 
     const handleExportCSV = () => {
-        if (processedData.length === 0) {
+        const exportSource = processedData.length > 0 ? processedData : data;
+        if (exportSource.length === 0) {
             setStatus({ message: 'Nenhum dado para exportar', type: 'error' });
             return;
         }
-        const filename = generateExportFilename(symbol, 'csv');
-        const exportData = processedData.map(item => ({
-            data: format(new Date(item.timestamp * 1000), 'dd/MM/yyyy'),
-            timestamp: item.timestamp,
-            preco_medio: item.price,
-            volume_long: item.long_volume,
-            volume_short: item.short_volume,
-            volume_total: item.total_volume,
-            ratio_long_short: item.long_short_ratio
-        }));
+
+        const filename = generateExportFilename(isMultiAssetMode ? 'MULTI' : symbol, 'csv');
+        const exportData = exportSource.map(item => {
+            const row: any = {
+                data_formatada: format(new Date(item.timestamp * 1000), 'dd/MM/yyyy HH:mm:ss'),
+                timestamp: item.timestamp,
+                preco: item.price,
+                volume_long: item.long_volume,
+                volume_short: item.short_volume,
+                volume_total: item.total_volume,
+                ratio_ls: item.long_short_ratio.toFixed(2),
+                ativo: item.symbol || (isMultiAssetMode ? 'MULTI' : symbol)
+            };
+
+            // Add breakdown if available (for aggregated rows)
+            if (item.symbolVolumes) {
+                row.detalhamento = Object.entries(item.symbolVolumes)
+                    .map(([s, v]: [string, any]) => `${s}(L:${v.long.toFixed(0)},S:${v.short.toFixed(0)})`)
+                    .join(' | ');
+            }
+
+            return row;
+        });
+
         exportToCSV(exportData, filename);
         setStatus({ message: `Dados exportados para ${filename}`, type: 'success' });
     };
 
     const handleExportJSON = () => {
-        if (processedData.length === 0) {
+        // We export the raw mapped 'data' to allow perfect state restoration on import
+        if (data.length === 0) {
             setStatus({ message: 'Nenhum dado para exportar', type: 'error' });
             return;
         }
-        const filename = generateExportFilename(symbol, 'json');
-        const exportData = processedData.map(item => ({
-            timestamp: item.timestamp,
-            date: format(new Date(item.timestamp * 1000), 'dd/MM/yyyy HH:mm:ss'),
-            price: item.price,
-            long_volume: item.long_volume,
-            short_volume: item.short_volume,
-            total_volume: item.total_volume,
-            long_short_ratio: item.long_short_ratio
-        }));
-        exportToJSON(exportData, { symbol, months, recordCount: exportData.length }, filename);
-        setStatus({ message: `Dados exportados para ${filename}`, type: 'success' });
+
+        const filename = generateExportFilename(isMultiAssetMode ? 'MULTI' : symbol, 'json');
+        const metadata = {
+            symbol: isMultiAssetMode ? 'MULTI' : symbol,
+            selectedSymbols: isMultiAssetMode ? selectedSymbols : [symbol],
+            isMultiAssetMode,
+            months,
+            priceInterval,
+            recordCount: data.length,
+            exportedAt: new Date().toISOString(),
+            // Store app versions or schema versions if needed
+            schemaVersion: '2.0'
+        };
+
+        exportToJSON(data, metadata, filename);
+        setStatus({ message: `Configurações e ${data.length} registros exportados para ${filename}`, type: 'success' });
     };
 
     const handleImportClick = () => {
@@ -774,9 +1071,19 @@ export function LiquidationTest() {
         try {
             setStatus({ message: 'Importando dados...', type: 'loading' });
 
-            let importedData: any[];
+            let importedData: any[] = [];
+            let metadata: any = null;
+
             if (file.name.endsWith('.json')) {
-                importedData = await importFromJSON(file);
+                const parsed = await importFromJSON(file);
+                if (parsed.data && Array.isArray(parsed.data)) {
+                    importedData = parsed.data;
+                    metadata = parsed.metadata;
+                } else if (Array.isArray(parsed)) {
+                    importedData = parsed;
+                } else {
+                    throw new Error('Formato JSON inválido: esperado array de dados ou objeto {metadata, data}');
+                }
             } else if (file.name.endsWith('.csv')) {
                 importedData = await importFromCSV(file);
             } else {
@@ -789,11 +1096,34 @@ export function LiquidationTest() {
                 return;
             }
 
+            // Validation: Ensure required fields exist in at least the first record
+            const first = importedData[0];
+            const hasRequired = (first.timestamp !== undefined || first.timestamp_original !== undefined) &&
+                (first.price !== undefined || first.preco !== undefined) &&
+                (first.total_volume !== undefined || first.volume_total !== undefined || first.amount !== undefined);
+
+            if (!hasRequired) {
+                console.warn('Imported data might be missing required fields:', first);
+            }
+
+            // Sync state with metadata if available (Restore Session)
+            if (metadata) {
+                if (metadata.isMultiAssetMode !== undefined) setIsMultiAssetMode(metadata.isMultiAssetMode);
+                if (metadata.selectedSymbols) setSelectedSymbols(metadata.selectedSymbols);
+                if (metadata.symbol && !metadata.isMultiAssetMode) setSymbol(metadata.symbol);
+                if (metadata.months) setMonths(metadata.months);
+                if (metadata.priceInterval) setPriceInterval(metadata.priceInterval);
+            }
+
             setData(importedData);
-            setStatus({ message: `${importedData.length} registros importados com sucesso.`, type: 'success' });
-        } catch (error) {
+            setLastFetchTime(Date.now());
+            setStatus({
+                message: `Importação concluída: ${importedData.length} registros restaurados.${metadata ? ' (Configurações aplicadas)' : ''}`,
+                type: 'success'
+            });
+        } catch (error: any) {
             console.error('Import error:', error);
-            setStatus({ message: 'Erro ao importar arquivo. Verifique o formato.', type: 'error' });
+            setStatus({ message: `Erro ao importar: ${error.message || 'Verifique o formato.'}`, type: 'error' });
         }
 
         event.target.value = '';
@@ -854,7 +1184,8 @@ export function LiquidationTest() {
                         long_volume: 0,
                         short_volume: 0,
                         total_volume: 0,
-                        count: 0
+                        count: 0,
+                        symbolVolumes: {}
                     };
                 }
             }
@@ -873,7 +1204,8 @@ export function LiquidationTest() {
                     long_volume: 0,
                     short_volume: 0,
                     total_volume: 0,
-                    count: 0
+                    count: 0,
+                    symbolVolumes: {}
                 };
             }
 
@@ -881,6 +1213,22 @@ export function LiquidationTest() {
             aggregated[rangeKey].short_volume += item.short_volume;
             aggregated[rangeKey].total_volume += item.total_volume;
             aggregated[rangeKey].count += 1;
+
+            if (item.symbol) {
+                if (!aggregated[rangeKey].symbolVolumes[item.symbol]) {
+                    aggregated[rangeKey].symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+                }
+                const sv = aggregated[rangeKey].symbolVolumes[item.symbol];
+                const oldTotal = sv.long + sv.short;
+                sv.long += item.long_volume;
+                sv.short += item.short_volume;
+                const newTotal = sv.long + sv.short;
+
+                // Update weighted average original price
+                if (newTotal > 0 && item.original_price) {
+                    sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * item.total_volume)) / newTotal;
+                }
+            }
         });
 
         return Object.values(aggregated).map(item => {
@@ -893,7 +1241,8 @@ export function LiquidationTest() {
                 long_volume: item.long_volume,
                 short_volume: item.short_volume,
                 total_volume: item.total_volume,
-                long_short_ratio: ratio
+                long_short_ratio: ratio,
+                symbolVolumes: item.symbolVolumes
             };
         }).sort((a, b) => a.price - b.price);
     };
@@ -1148,13 +1497,32 @@ export function LiquidationTest() {
                 ? totalLongVolume / Math.max(1, totalShortVolume)
                 : -(totalShortVolume / Math.max(1, totalLongVolume));
 
+            const symbolVolumes: Record<string, { long: number; short: number; avgOriginalPrice: number }> = {};
+            items.forEach(item => {
+                if (item.symbol) {
+                    if (!symbolVolumes[item.symbol]) {
+                        symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+                    }
+                    const sv = symbolVolumes[item.symbol];
+                    const oldTotal = sv.long + sv.short;
+                    sv.long += item.long_volume;
+                    sv.short += item.short_volume;
+                    const newTotal = sv.long + sv.short;
+
+                    if (newTotal > 0 && item.original_price) {
+                        sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * item.total_volume)) / newTotal;
+                    }
+                }
+            });
+
             return {
                 timestamp: bucket.priceStart, // Use price start as timestamp for range identification
                 price: avgPrice,
                 long_volume: totalLongVolume,
                 short_volume: totalShortVolume,
                 total_volume: totalVolume,
-                long_short_ratio: ratio
+                long_short_ratio: ratio,
+                symbolVolumes
             };
         });
 
@@ -1268,13 +1636,32 @@ export function LiquidationTest() {
                 ? totalLongVolume / Math.max(1, totalShortVolume)
                 : -(totalShortVolume / Math.max(1, totalLongVolume));
 
+            const symbolVolumes: Record<string, { long: number; short: number; avgOriginalPrice: number }> = {};
+            items.forEach(item => {
+                if (item.symbol) {
+                    if (!symbolVolumes[item.symbol]) {
+                        symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+                    }
+                    const sv = symbolVolumes[item.symbol];
+                    const oldTotal = sv.long + sv.short;
+                    sv.long += item.long_volume;
+                    sv.short += item.short_volume;
+                    const newTotal = sv.long + sv.short;
+
+                    if (newTotal > 0 && item.original_price) {
+                        sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * item.total_volume)) / newTotal;
+                    }
+                }
+            });
+
             return {
                 timestamp: bucket.priceStart, // Use price start as timestamp for range identification
                 price: avgPrice,
                 long_volume: totalLongVolume,
                 short_volume: totalShortVolume,
                 total_volume: totalVolume,
-                long_short_ratio: ratio
+                long_short_ratio: ratio,
+                symbolVolumes
             };
         });
 
@@ -1385,30 +1772,86 @@ export function LiquidationTest() {
         const start = months === 0 ? end - (10 * 365 * 24 * 60 * 60) : end - (months * 30 * 24 * 60 * 60);
 
         try {
-            const liqResponse = await liquidationsApi.getAll({
-                symbol: symbol,
-                start_date: new Date(start * 1000).toISOString(),
-                end_date: new Date(end * 1000).toISOString(),
-                amount_min: 0
-            });
+            if (isMultiAssetMode && selectedSymbols.length > 0) {
+                // Fetch BTC price for normalization
+                const btcPricePromise = pricesApi.getAll({
+                    symbol: 'BTCUSDT_PERP.A', // Base standard
+                    start_date: new Date(start * 1000).toISOString(),
+                    end_date: new Date(end * 1000).toISOString()
+                });
 
-            const priceResponse = await pricesApi.getAll({
-                symbol: symbol,
-                start_date: new Date(start * 1000).toISOString(),
-                end_date: new Date(end * 1000).toISOString()
-            });
+                // Fetch liquidations for all selected symbols in batches of 3 with 3s delay
+                const BATCH_SIZE = 3;
+                const batches = [];
+                for (let i = 0; i < selectedSymbols.length; i += BATCH_SIZE) {
+                    batches.push(selectedSymbols.slice(i, i + BATCH_SIZE));
+                }
 
-            return {
-                liquidation: liqResponse.data.data,
-                price: priceResponse.data.data
-            };
+                const liquidationResults: any[] = [];
+                for (let i = 0; i < batches.length; i++) {
+                    const batch = batches[i];
+
+                    // Add delay between batches (except the first one) to stay under strict rate limits
+                    if (i > 0) {
+                        setStatus({ message: `Waiting to avoid rate limits (${i + 1}/${batches.length})...`, type: 'loading' });
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    }
+
+                    const batchSymbols = batch.join(',');
+                    const res = await liquidationsApi.getAll({
+                        symbol: batchSymbols,
+                        start_date: new Date(start * 1000).toISOString(),
+                        end_date: new Date(end * 1000).toISOString(),
+                        amount_min: 0
+                    });
+
+                    const batchData = res.data.data;
+                    batch.forEach(sym => {
+                        liquidationResults.push({
+                            symbol: sym,
+                            data: batchData.filter((item: any) => item.symbol === sym)
+                        });
+                    });
+                }
+
+                const btcPriceRes = await btcPricePromise;
+
+                return {
+                    isMulti: true,
+                    liquidations: liquidationResults,
+                    price: btcPriceRes.data.data
+                };
+            } else {
+                const liqResponse = await liquidationsApi.getAll({
+                    symbol: symbol,
+                    start_date: new Date(start * 1000).toISOString(),
+                    end_date: new Date(end * 1000).toISOString(),
+                    amount_min: 0
+                });
+
+                const priceResponse = await pricesApi.getAll({
+                    symbol: symbol,
+                    start_date: new Date(start * 1000).toISOString(),
+                    end_date: new Date(end * 1000).toISOString()
+                });
+
+                return {
+                    isMulti: false,
+                    liquidation: liqResponse.data.data,
+                    price: priceResponse.data.data
+                };
+            }
         } catch (error: any) {
             throw error;
         }
     };
 
+    const cacheKeyBase = isMultiAssetMode
+        ? `liquidation_multi_v2_${[...selectedSymbols].sort().join('-')}_${months}`
+        : `liquidation_v2_${symbol}_${months}`;
+
     const { isLoading, refetch, isFromCache, clearCache } = useCacheData({
-        cacheKey: `liquidation_${symbol}_${months}`,
+        cacheKey: cacheKeyBase,
         fetchFn: fetchLiquidationData,
         ttlMinutes: 30,
         enabled: true,
@@ -1416,13 +1859,7 @@ export function LiquidationTest() {
             const data = result as any;
             if (!data) return;
 
-            const { liquidation, price } = data;
-
-            // liquidation and price are already transformed lists of objects
-            const priceData = Array.isArray(price) ? price : [];
-
-            // Build a price map with timestamp as key (normalized to start of day)
-            // Also keep track of all available timestamps to find nearest if needed
+            const priceData = Array.isArray(data.price) ? data.price : [];
             const priceMap = new Map();
             const sortedPrices = [...priceData].sort((a: any, b: any) => Number(a.timestamp) - Number(b.timestamp));
 
@@ -1432,44 +1869,42 @@ export function LiquidationTest() {
                 priceMap.set(dateKey, p.price);
             });
 
-            const mapped: HistoricalLiquidation[] = liquidation.map((item: any) => {
-                const timestamp = Number(item.timestamp);
-                const itemPrice = Number(item.price);
-
-                // Use historical price from priceMap if available
+            const getNormalizedPrice = (timestamp: number, itemPrice: number) => {
                 const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
-                let price = priceMap.get(dateKey);
+                let basePrice = priceMap.get(dateKey);
 
-                // Fallback 1: If no exact date match, look for nearest historical price
-                if (price === undefined && sortedPrices.length > 0) {
-                    // Simple binary search or find nearest
+                if (basePrice === undefined && sortedPrices.length > 0) {
                     let nearest = sortedPrices[0];
                     let minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
-
                     for (const p of sortedPrices) {
                         const diff = Math.abs(Number(p.timestamp) - timestamp);
                         if (diff < minDiff) {
                             minDiff = diff;
                             nearest = p;
                         } else if (diff > minDiff) {
-                            // Since it's sorted, we can stop once diff starts increasing
                             break;
                         }
                     }
-
-                    // Only use nearest if it's within a reasonable range (e.g., 7 days)
                     if (minDiff <= 7 * 24 * 60 * 60) {
-                        price = nearest.price;
-                        console.log(`[DEBUG] No exact price match for ${dateKey}, using nearest: ${new Date(Number(nearest.timestamp) * 1000).toISOString().split('T')[0]}`);
+                        basePrice = nearest.price;
                     }
                 }
 
-                // Fallback 2: Use item.price (which might be the current price from Binance fetched in api.ts)
-                if (price === undefined || price === 0) {
-                    price = itemPrice;
+                if (basePrice === undefined || basePrice === 0) {
+                    basePrice = itemPrice;
                 }
 
-                // Use long_volume and short_volume from API if available, otherwise calculate from side
+                // In multi-asset mode, the formula P_alt * (P_btc / P_alt) simplifies to P_btc.
+                // Thus we simply assign the basePrice (which is the BTC price) to the liquidation.
+                // In single-asset mode, basePrice is simply the asset's own historical price.
+                return basePrice;
+            };
+
+            const mapLiquidationItem = (item: any, symbolLabel?: string) => {
+                const timestamp = Number(item.timestamp);
+                const itemPrice = Number(item.price);
+                const finalPrice = getNormalizedPrice(timestamp, itemPrice);
+
                 const longVolume = item.long_volume !== undefined ? item.long_volume : (item.side === 'long' ? item.amount : 0);
                 const shortVolume = item.short_volume !== undefined ? item.short_volume : (item.side === 'short' ? item.amount : 0);
 
@@ -1481,11 +1916,29 @@ export function LiquidationTest() {
                     long_short_ratio: longVolume >= shortVolume
                         ? longVolume / Math.max(1, shortVolume)
                         : -(shortVolume / Math.max(1, longVolume)),
-                    price: price
+                    price: finalPrice,
+                    symbol: symbolLabel,
+                    original_price: itemPrice
                 };
-            });
+            };
 
-            setData(mapped);
+            let allMapped: HistoricalLiquidation[] = [];
+
+            if (data.isMulti) {
+                data.liquidations.forEach((liqGroup: any) => {
+                    if (Array.isArray(liqGroup.data)) {
+                        allMapped = allMapped.concat(liqGroup.data.map((item: any) => mapLiquidationItem(item, liqGroup.symbol)));
+                    }
+                });
+            } else {
+                if (Array.isArray(data.liquidation)) {
+                    allMapped = data.liquidation.map((item: any) => mapLiquidationItem(item, symbol));
+                }
+            }
+
+            allMapped.sort((a, b) => a.timestamp - b.timestamp);
+
+            setData(allMapped);
 
             // Set current price from the last price data entry
             if (priceData.length > 0) {
@@ -1495,8 +1948,8 @@ export function LiquidationTest() {
             setLastFetchTime(Date.now());
             setStatus({
                 message: isFromCache
-                    ? `Dados carregados do cache (${mapped.length} registros).`
-                    : `Dados carregados (${mapped.length} registros).`,
+                    ? `Dados carregados do cache (${allMapped.length} registros).`
+                    : `Dados carregados (${allMapped.length} registros).`,
                 type: 'success'
             });
         },
@@ -1817,16 +2270,44 @@ export function LiquidationTest() {
                 <CardContent className="space-y-4">
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Símbolo</label>
+                            <div className="flex items-center justify-between">
+                                <label className="text-sm font-medium">Símbolo</label>
+                                <label className="flex items-center gap-1.5 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={isMultiAssetMode}
+                                        onChange={(e) => setIsMultiAssetMode(e.target.checked)}
+                                        className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                                    />
+                                    <span className="text-[11px] text-muted-foreground">Multi-Ativo</span>
+                                </label>
+                            </div>
                             <div className="relative" ref={symbolRef}>
                                 <div
-                                    className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                                    className="flex min-h-9 w-full flex-wrap gap-1 items-center justify-between rounded-md border border-input bg-background px-3 py-1.5 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                                     onClick={() => setIsSymbolOpen(!isSymbolOpen)}
                                 >
-                                    <span className="truncate">
-                                        {currentSymbolData.name} ({currentSymbolData.baseAsset})
-                                    </span>
-                                    <Search className="h-4 w-4 opacity-50" />
+                                    <div className="flex flex-wrap gap-1 flex-1">
+                                        {isMultiAssetMode ? (
+                                            selectedSymbols.length > 0 ? (
+                                                selectedSymbols.map(sym => {
+                                                    const sData = availableSymbols.find(s => s.symbol === sym) || { name: sym };
+                                                    return (
+                                                        <span key={sym} className="inline-flex items-center rounded-sm bg-secondary px-1.5 py-0.5 text-xs font-medium text-secondary-foreground">
+                                                            {sData.name}
+                                                        </span>
+                                                    );
+                                                })
+                                            ) : (
+                                                <span className="text-muted-foreground">Selecione ativos</span>
+                                            )
+                                        ) : (
+                                            <span className="truncate">
+                                                {currentSymbolData.name} ({currentSymbolData.baseAsset})
+                                            </span>
+                                        )}
+                                    </div>
+                                    <Search className="h-4 w-4 opacity-50 ml-2 shrink-0" />
                                 </div>
 
                                 {isSymbolOpen && (
@@ -1845,22 +2326,79 @@ export function LiquidationTest() {
                                         </div>
                                         <div className="pt-1">
                                             {filteredSymbols.length > 0 ? (
-                                                filteredSymbols.map((s) => (
-                                                    <div
-                                                        key={s.symbol}
-                                                        className={`relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 px-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground ${symbol === s.symbol ? 'bg-accent text-accent-foreground' : ''}`}
-                                                        onClick={() => {
-                                                            setSymbol(s.symbol);
-                                                            setIsSymbolOpen(false);
-                                                            setSymbolSearch('');
-                                                        }}
-                                                    >
-                                                        <div className="flex flex-col">
-                                                            <span className="font-medium">{s.name}</span>
-                                                            <span className="text-[10px] text-muted-foreground">{s.symbol}</span>
-                                                        </div>
-                                                    </div>
-                                                ))
+                                                (() => {
+                                                    let lastCategory = '';
+                                                    return filteredSymbols.map((s) => {
+                                                        const isSelected = isMultiAssetMode
+                                                            ? selectedSymbols.includes(s.symbol)
+                                                            : symbol === s.symbol;
+
+                                                        const showHeader = s.category !== lastCategory;
+                                                        lastCategory = s.category;
+                                                        const isCollapsed = collapsedCategories.has(s.category);
+
+                                                        return (
+                                                            <div key={s.symbol}>
+                                                                {showHeader && (
+                                                                    <div
+                                                                        className="px-2 py-1.5 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/40 mt-1 first:mt-0 flex items-center justify-between cursor-pointer hover:bg-muted/60 transition-colors"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setCollapsedCategories(prev => {
+                                                                                const next = new Set(prev);
+                                                                                if (next.has(s.category)) next.delete(s.category);
+                                                                                else next.add(s.category);
+                                                                                return next;
+                                                                            });
+                                                                        }}
+                                                                    >
+                                                                        <span>
+                                                                            {s.category === 'Perpetual' ? 'Perpetuais (Sem Vencimento)' :
+                                                                                s.category === 'Futures' ? 'Futuros (Com Vencimento)' : 'Mercado Spot'}
+                                                                        </span>
+                                                                        {isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+                                                                    </div>
+                                                                )}
+                                                                {!isCollapsed && (
+                                                                    <div
+                                                                        className={`relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 px-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground ${isSelected ? 'bg-accent text-accent-foreground' : ''}`}
+                                                                        onClick={() => {
+                                                                            if (isMultiAssetMode) {
+                                                                                setSelectedSymbols(prev =>
+                                                                                    prev.includes(s.symbol)
+                                                                                        ? prev.filter(sym => sym !== s.symbol)
+                                                                                        : [...prev, s.symbol]
+                                                                                );
+                                                                            } else {
+                                                                                setSymbol(s.symbol);
+                                                                                setIsSymbolOpen(false);
+                                                                                setSymbolSearch('');
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        <div className="flex flex-col flex-1">
+                                                                            <div className="flex items-center justify-between">
+                                                                                <span className="font-medium">{s.name}</span>
+                                                                                {(s.marketCap ?? 0) > 0 && (
+                                                                                    <span className="text-[10px] bg-primary/10 text-primary px-1.5 rounded-full font-semibold">
+                                                                                        ${((s.marketCap ?? 0) >= 1e12 ? ((s.marketCap ?? 0) / 1e12).toFixed(1) + 'T' :
+                                                                                            (s.marketCap ?? 0) >= 1e9 ? ((s.marketCap ?? 0) / 1e9).toFixed(1) + 'B' :
+                                                                                                (s.marketCap ?? 0) >= 1e6 ? ((s.marketCap ?? 0) / 1e6).toFixed(1) + 'M' :
+                                                                                                    ((s.marketCap ?? 0) / 1e3).toFixed(0) + 'k')}
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                            <span className="text-[10px] text-muted-foreground">{s.symbol}</span>
+                                                                        </div>
+                                                                        {isMultiAssetMode && isSelected && (
+                                                                            <div className="h-2 w-2 rounded-full bg-primary mr-1"></div>
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    });
+                                                })()
                                             ) : (
                                                 <div className="py-6 text-center text-sm text-muted-foreground">
                                                     Nenhum ativo encontrado.
@@ -1939,6 +2477,31 @@ export function LiquidationTest() {
                                     </button>
                                 ))}
                             </div>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Unidade na Tooltip</label>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setTooltipCurrency('usd')}
+                                    className={`flex-1 h-9 rounded-md text-xs font-semibold transition-all ${tooltipCurrency === 'usd'
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-muted text-muted-foreground hover:bg-accent'
+                                        }`}
+                                >
+                                    Dólar (USD)
+                                </button>
+                                <button
+                                    onClick={() => setTooltipCurrency('btc')}
+                                    className={`flex-1 h-9 rounded-md text-xs font-semibold transition-all ${tooltipCurrency === 'btc'
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-muted text-muted-foreground hover:bg-accent'
+                                        }`}
+                                    title="Mostra o volume equivalente em BTC baseado no preço da liquidação"
+                                >
+                                    Bitcoin (BTC)
+                                </button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">Formato dos volumes na dica (tooltip)</p>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Agrupar Por</label>
@@ -2659,6 +3222,7 @@ export function LiquidationTest() {
                                     showSD3={showSD3}
                                     horizontal={chartHorizontal}
                                     symbol={symbol}
+                                    tooltipCurrency={tooltipCurrency}
                                 />
                             </CardContent>
 

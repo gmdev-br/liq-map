@@ -1,34 +1,33 @@
-# Plano de Migração: Arquitetura Frontend-Only (Serverless)
+# Plano de Implementação: Modo Multi-Ativo (Liquidação)
 
-## 📌 Objetivo
-Eliminar a dependência do backend em Python e hospedar 100% do projeto no GitHub Pages. Todo o processamento e as chamadas de API passarão a ser feitos diretamente pelo navegador do usuário (React/Vite).
+## Objetivo
+Criar um modo multi-ativo na página de Teste de Liquidação (`LiquidationTest.tsx`), permitindo selecionar múltiplos ativos e agregá-los no mesmo gráfico, normalizando seus preços de liquidação para a escala de preço do Bitcoin (BTC).
 
-## 🚧 Desafios e Limitações Esperadas
-1. **Problemas de CORS:** Chamadas diretas para APIs (Coinalyze, Binance, CoinGecko) podem ser bloqueadas pelo CORS dos navegadores. Usaremos um *CORS Proxy* gratuito (ex: `corsproxy.io` ou AllOrigins) caso as APIs bloqueiem.
-2. **Exposição de Chaves de API:** As chaves (ex: Coinalyze API Key) teriam que ficar expostas ou serem digitadas pelo usuário no navegador.
-3. **Sem WebSockets Globais:** Sem o nosso backend, teremos que tentar conectar diretamente aos WebSockets públicos da Binance/Coinalyze no frontend.
+## Mudanças Propostas no `LiquidationTest.tsx`
 
-## 🛠️ Passos de Implementação
+1. **Estado e UI:**
+   - Adicionar estado `isMultiAssetMode: boolean` para alternar entre o modo padrão (1 ativo) e o modo multi-ativo.
+   - Adicionar estado `selectedSymbols: string[]` para armazenar a lista de ativos selecionados no modo multi-ativo.
+   - Modificar o seletor de moedas na UI para permitir seleção múltipla (usando checkboxes ou tags) quando o modo multi-ativo estiver ativado.
 
-### Passo 1: Configuração de API Keys no Frontend
-- Criar um modal/página de "Configurações" onde o próprio usuário insere sua *API Key* da Coinalyze (e qualquer outra necessária).
-- Salvar essas chaves de forma segura no `localStorage` do navegador para que ele não precise digitar toda vez que abrir o site.
+2. **Transformação e Fetch de Dados:**
+   - No modo multi-ativo, alterar o `fetchLiquidationData` para fazer um `Promise.all` e buscar os dados de liquidação e preço de **todos** os ativos selecionados.
+   - Forçar a busca do histórico de preços do `BTCUSDT_PERP.A` (ou ativo base do BTC configurado) paralelamente, pois ele será usado como o "Padrão de Preço".
+   - **Lógica de Normalização**:
+     Para cada registro de liquidação de um ativo alternativo (Altcoin) no tempo $T$:
+     - Obter o preço da Altcoin no tempo $T$: $P_{alt}$
+     - Obter o preço do BTC no tempo $T$: $P_{btc}$
+     - Calcular o preço normalizado conforme a fórmula:
+       `Preço Normalizado = P_alt * (P_btc / P_alt) ` (o que resulta magicamente em `P_btc`).
+     - Atribuir o volume dessa liquidação ao `Preço Normalizado`.
+   - Concatenar e agrupar todos os registros de todos os ativos selecionados, de forma que o gráfico renderize o volume somado de todo o mercado nas faixas de preço do BTC.
 
-### Passo 2: Refatoração do Serviço de API (`api.ts`)
-- Alterar as URLs do `api.ts` que atualmente apontam para `VITE_API_URL` (nosso antigo backend).
-- Fazer com que o `api.ts` chame **diretamente** as APIs públicas.
-    - **Preços:** Binance API (ex: `https://api.binance.com/api/v3/klines`). A Binance geralmente permite CORS.
-    - **Liquidações:** Coinalyze API (ex: `https://api.coinalyze.net/v1/liquidation-history`). Se a Coinalyze bloquear (CORS), enveloparemos a URL em um *CORS Proxy* gratuito.
+3. **Performance (Consideração):**
+   - Limitar o número máximo de ativos selecionáveis (ex: 5-10) ou adicionar loading flags adequados, já que o Chart fará múltiplos requests para a API do Coinalyze/Binance simultaneamente.
 
-### Passo 3: Refatoração dos WebSockets (`useWebSocket.ts`)
-- Desativar a conexão com o nosso backend (`wss://.../ws`).
-- Substituir pelas conexões diretas:
-    - Preço em tempo real: Ligar no WebSocket público da Binance (`wss://stream.binance.com:9443/ws/btcusdt@trade`).
-    - Liquidações em tempo real: Investigar se a Coinalyze permite conexões públicas ou usar outra fonte (ex: Binance futures stream).
+4. **Detalhamento na Tooltip:**
+   - Modificar a interface de dados para rastrear o volume por símbolo em cada faixa de preço.
+   - Atualizar a tooltip do gráfico para exibir o detalhamento de quanto cada ativo contribui para o volume total daquela barra.
 
-### Passo 4: Limpeza do Repositório
-- Se aprovado o funcionamento estrito via frontend, os arquivos da pasta `/backend` e `/docker` podem ser arquivados ou ignorados no deploy.
-- Remover os scripts relacionados ao backend no GitHub Actions.
-
-## 📝 Verificação
-Você concorda com essa migração? Entende que ao compartilhar o link do GitHub Pages para outras pessoas, elas também precisarão inserir a própria chave de API da Coinalyze no site?
+## Aprovação
+Aguardando aprovação do usuário para iniciar a implementação do plano acima.

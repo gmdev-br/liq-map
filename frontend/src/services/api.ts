@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { cache } from '@/utils/cache';
+import { dbCache } from '@/utils/db';
 import type {
   Liquidation,
   Price,
@@ -10,119 +12,74 @@ import type {
   LiquidationStats
 } from '@/types';
 
-// Detect if running in production (Vercel)
-// Check multiple conditions: no localhost, not 127.0.0.1, and verify it's not the dev server
-// Also check for VERCEL_ENV or VITE_API_MODE environment variables
+// detect if running in production (Vercel)
 const isProduction = (() => {
-  // Allow forcing production mode via environment variable or localStorage for testing
   if (typeof window !== 'undefined') {
     const forcedMode = localStorage.getItem('force_api_mode');
     if (forcedMode === 'production') return true;
     if (forcedMode === 'development') return false;
   }
-
   if (typeof window === 'undefined') return false;
-
   const hostname = window.location.hostname;
   const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0';
   const isDevPort = window.location.port === '5173' || window.location.port === '3000' || window.location.port === '5174';
-
-  // Also check for Vercel production indicators
   const isVercel = hostname.includes('.vercel.app') || hostname.includes('.vercel.sh');
-  const isProductionDomain = !isLocalhost && !isDevPort;
-
-  return isProductionDomain || isVercel;
+  return !isLocalhost && !isDevPort || isVercel;
 })();
 
-// Log the detected environment
-if (typeof window !== 'undefined') {
-  console.log('[API] Environment detection:', {
-    isProduction,
-    hostname: window.location.hostname,
-    port: window.location.port
-  });
-}
+const getBaseUrl = () => isProduction ? '' : '';
 
-// Get the base URL for API calls
-const getBaseUrl = () => {
-  if (isProduction) {
-    // In production, use the Vercel API route
-    return ''; // Same origin on Vercel
-  }
-  // In development, use local proxy or direct
-  return '';
-};
-
-// Helper function to fetch price from Binance using klines endpoint (CORS enabled)
 const fetchBinancePrice = async (symbol: string): Promise<number> => {
+  const cacheKey = `price_${symbol}`;
+  const cached = cache.get<number>(cacheKey);
+  if (cached) return cached;
+
   try {
-    // Convert Coinalyze symbol format (BTCUSDT_PERP.A) to Binance format (BTCUSDT)
-    // Remove _PERP.A or PERP.A suffix
     const binanceSymbol = symbol.replace('_PERP.A', '').replace('PERP.A', '');
-    console.log('[DEBUG] Single fetch - Symbol conversion:', { original: symbol, converted: binanceSymbol });
+    const isPerp = symbol.includes('PERP.A');
 
-    // Use klines endpoint which has CORS enabled
-    // Get the last closed candle (limit=1), the close price is at index [4]
-    const response = await axios.get(
-      `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`,
-      { timeout: 5000 }
-    );
-    console.log('[DEBUG] Single fetch - Binance klines response:', response.data);
+    let url: string;
+    if (isPerp) {
+      url = isProduction
+        ? `https://fapi.binance.com/fapi/v1/klines?symbol=${binanceSymbol}&interval=1d&limit=1`
+        : `/api/binance-futures/fapi/v1/klines?symbol=${binanceSymbol}&interval=1d&limit=1`;
+    } else {
+      url = isProduction
+        ? `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`
+        : `/api/binance-spot/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`;
+    }
 
-    // klines returns array of candles, get the close price (index 4) from the last candle
+    const response = await axios.get(url, { timeout: 5000, validateStatus: (status) => status < 500 });
+    if (response.status === 400 || response.status === 404) {
+      cache.set(cacheKey, 0, 5); // Cache non-existent symbols for 5 mins
+      return 0;
+    }
+
     const closePrice = response.data[0]?.[4];
-    return closePrice ? parseFloat(closePrice) : 0;
+    const price = closePrice ? parseFloat(closePrice) : 0;
+
+    if (price > 0) cache.set(cacheKey, price, 1); // 1 min cache for prices
+    return price;
   } catch (error: any) {
-    console.error(`[DEBUG] Failed to fetch price for ${symbol}:`, error.response?.data || error.message);
+    // Silent fail for prices, avoid console clutter
     return 0;
   }
 };
 
-// Helper to get multiple Binance prices at once using klines endpoint (CORS enabled)
 const fetchMultipleBinancePrices = async (symbols: string[]): Promise<Record<string, number>> => {
   const prices: Record<string, number> = {};
+  const uniqueSymbols = [...new Set(symbols.map(s => s.replace('_PERP.A', '').replace('PERP.A', '')))];
 
-  // Get unique symbols and convert to Binance format
-  const uniqueSymbols = [...new Set(symbols.map(s => {
-    const converted = s.replace('_PERP.A', '').replace('PERP.A', '');
-    console.log('[DEBUG] Symbol conversion:', { original: s, converted });
-    return converted;
-  }))];
-
-  console.log('[DEBUG] Fetching Binance prices for symbols:', uniqueSymbols);
-
-  // Fetch prices in parallel using klines endpoint (CORS enabled)
   const promises = uniqueSymbols.map(async (symbol) => {
-    try {
-      console.log('[DEBUG] Calling Binance klines API for:', symbol);
-      // Use klines endpoint which has CORS enabled
-      // Get the last closed candle (limit=1), the close price is at index [4]
-      const response = await axios.get(
-        `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=1`,
-        { timeout: 5000 }
-      );
-      console.log('[DEBUG] Binance klines response for', symbol, ':', response.data);
-
-      // klines returns array of candles, get the close price (index 4) from the last candle
-      const closePrice = response.data[0]?.[4];
-      prices[symbol] = closePrice ? parseFloat(closePrice) : 0;
-    } catch (error: any) {
-      console.error(`[DEBUG] Failed to fetch price for ${symbol}:`, error.response?.data || error.message);
-      prices[symbol] = 0;
-    }
+    prices[symbol] = await fetchBinancePrice(symbol);
   });
 
   await Promise.all(promises);
-  console.log('[DEBUG] Final prices:', prices);
   return prices;
 };
 
 const fetchWithProxy = async (targetUrl: string, useProxy: boolean = false) => {
-  // In production, try direct API call first
-  // Coinalyze may or may not allow requests from Vercel domain
-
   if (!useProxy || isProduction) {
-    // Direct API call
     try {
       const response = await axios.get(targetUrl, {
         timeout: 30000,
@@ -130,38 +87,25 @@ const fetchWithProxy = async (targetUrl: string, useProxy: boolean = false) => {
       });
       return response.data;
     } catch (error: any) {
-      // If CORS error in production, log it
-      if (isProduction && error.message?.includes('Network Error')) {
-        console.error('[API] CORS error in production - Coinalyze may not allow requests from this domain');
-      }
       throw error;
     }
   }
-
-  // Use local proxy server for APIs without CORS support
-  const proxyUrl = `http://localhost:3001${targetUrl.replace('https://api.coinalyze.net', '')}`;
-
-  const response = await axios.get(proxyUrl, {
-    timeout: 30000
-  });
-  return response.data;
+  return (await axios.get(`http://localhost:3001${targetUrl.replace('https://api.coinalyze.net', '')}`, { timeout: 30000 })).data;
 };
 
 const getApiKey = () => {
   try {
     const storage = localStorage.getItem('coinglass-storage');
     if (storage) {
-      const parsed = JSON.parse(storage);
-      const userApiKey = parsed.state?.settings?.apiKey;
-      if (userApiKey && userApiKey.trim() !== '') {
-        return userApiKey;
-      }
+      const userApiKey = JSON.parse(storage).state?.settings?.apiKey;
+      if (userApiKey?.trim()) return userApiKey;
     }
-  } catch (e) {
-    console.error('Error reading API key', e);
-  }
-  return 'FREE'; // Default Coinalyze key
+  } catch (e) { }
+  return 'FREE';
 };
+
+// In-memory request deduplicator to prevent double-firing in Dev/StrictMode
+const activeRequests = new Map<string, Promise<any>>();
 
 // Liquidations (Coinalyze)
 export const liquidationsApi = {
@@ -185,104 +129,131 @@ export const liquidationsApi = {
 
     const apiKey = getApiKey();
     const query = `symbols=${symbols}&interval=${interval}&from=${fromTime}&to=${toTime}&api_key=${apiKey}`;
+    const cacheKey = `liq_${symbols}_${fromTime}_${toTime}`;
 
-    // Use relative proxy path - Vite proxies to Coinalyze in dev, Vercel in production
+    // Check for cached data first
+    try {
+      const cached = await dbCache.get<any>(cacheKey);
+      if (cached) return cached;
+    } catch (e) { }
+
+    // Deduplicate active requests
+    if (activeRequests.has(cacheKey)) {
+      console.log(`[API] Deduplicating request for ${cacheKey}`);
+      return activeRequests.get(cacheKey);
+    }
+
     const targetUrl = `/api/coinalyze?${query}`;
 
-    // Use relative proxy path for CORS handling
-    const data = await fetchWithProxy(targetUrl, false);
+    const fetchPromise = (async () => {
+      try {
+        const data = await fetchWithProxy(targetUrl, false);
 
-    let liquidationList: any[] = [];
-    if (Array.isArray(data)) {
-      if (data.length > 0 && typeof data[0] === 'object' && "history" in data[0]) {
-        liquidationList = data[0].history;
-      } else {
-        liquidationList = data;
+        const symbolList = symbols.split(',');
+        const binancePrices = await fetchMultipleBinancePrices(symbolList);
+
+        let transformedData: Liquidation[] = [];
+        const multiSymbolData = Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && "history" in data[0];
+
+        if (multiSymbolData) {
+          // Multi-symbol response
+          data.forEach((symGroup: any) => {
+            const sym = symGroup.symbol;
+            const history = symGroup.history || [];
+            const binanceSymbolKey = sym.replace('_PERP.A', '').replace('PERP.A', '');
+            const binancePrice = binancePrices[binanceSymbolKey] || 0;
+
+            history.forEach((item: any) => {
+              const longLiq = item.l || item.long_volume || item.long || 0;
+              const shortLiq = item.s || item.short || item.short_volume || item.sv || 0;
+              const side = longLiq > shortLiq ? 'long' : 'short';
+              const rawTime = item.t || item.time || item.timestamp || 0;
+              const timestamp = (!rawTime || typeof rawTime !== 'number') ? Math.floor(Date.now() / 1000) : (rawTime < 10000000000 ? rawTime : Math.floor(rawTime / 1000));
+              const liquidationPrice = item.price || binancePrice;
+
+              transformedData.push({
+                id: `${sym}_${rawTime}`,
+                timestamp: String(timestamp),
+                amount: (longLiq + shortLiq) * liquidationPrice,
+                exchange: item.exchange || 'unknown',
+                side,
+                price: liquidationPrice,
+                symbol: sym,
+                quantity: longLiq + shortLiq,
+                long_volume: longLiq * liquidationPrice,
+                short_volume: shortLiq * liquidationPrice
+              });
+            });
+          });
+        } else {
+          // Single symbol response
+          let liquidationList: any[] = [];
+          if (Array.isArray(data)) {
+            liquidationList = (data.length > 0 && typeof data[0] === 'object' && "history" in data[0]) ? data[0].history : data;
+          } else if (typeof data === 'object') {
+            liquidationList = data.history || data.data || [];
+          }
+
+          const liquidationSymbol = symbols.split(',')[0];
+          const binanceSymbolKey = liquidationSymbol.replace('_PERP.A', '').replace('PERP.A', '');
+          const binancePrice = binancePrices[binanceSymbolKey] || 0;
+
+          transformedData = liquidationList.map(item => {
+            const longLiq = item.l || item.long_volume || item.long || 0;
+            const shortLiq = item.s || item.short || item.short_volume || item.sv || 0;
+            const side = longLiq > shortLiq ? 'long' : 'short';
+            const rawTime = item.t || item.time || item.timestamp || 0;
+            const timestamp = (!rawTime || typeof rawTime !== 'number') ? Math.floor(Date.now() / 1000) : (rawTime < 10000000000 ? rawTime : Math.floor(rawTime / 1000));
+            const liquidationPrice = item.price || binancePrice;
+
+            return {
+              id: String(rawTime),
+              timestamp: String(timestamp),
+              amount: (longLiq + shortLiq) * liquidationPrice,
+              exchange: item.exchange || 'unknown',
+              side,
+              price: liquidationPrice,
+              symbol: liquidationSymbol,
+              quantity: longLiq + shortLiq,
+              long_volume: longLiq * liquidationPrice,
+              short_volume: shortLiq * liquidationPrice
+            };
+          });
+        }
+
+        if (params?.amount_min !== undefined) transformedData = transformedData.filter(i => i.amount >= params.amount_min!);
+        if (params?.amount_max !== undefined) transformedData = transformedData.filter(i => i.amount <= params.amount_max!);
+
+        const result = {
+          data: {
+            data: transformedData,
+            total: transformedData.length,
+            page: 1,
+            page_size: transformedData.length,
+            has_next: false,
+            has_prev: false
+          }
+        };
+
+        await dbCache.set(cacheKey, result, 5); // 5 min cache for liquidations
+        return result;
+      } catch (error: any) {
+        if (error.response?.status === 429) {
+          console.warn('[API] Rate limit hit, checking for stale cache fallback...');
+          const raw = await dbCache.getRaw<any>(cacheKey);
+          if (raw) {
+            console.log('[API] Serving stale cache data due to 429');
+            return raw.data;
+          }
+        }
+        throw error;
+      } finally {
+        activeRequests.delete(cacheKey);
       }
-    } else if (typeof data === 'object') {
-      liquidationList = data.history || data.data || [];
-    }
+    })();
 
-    console.log('[DEBUG] Coinalyze API response structure:', { data, liquidationList, firstItem: liquidationList[0] });
-
-    // Log all available fields in the first item to understand the structure
-    if (liquidationList.length > 0) {
-      console.log('[DEBUG] First item fields:', Object.keys(liquidationList[0]));
-      console.log('[DEBUG] First item full data:', JSON.stringify(liquidationList[0], null, 2));
-    }
-
-    // Extract unique symbols from liquidation data - use params only (Coinalyze API doesn't return symbol in data)
-    const symbolList = symbols.split(',');
-    console.log('[DEBUG] Symbol list from params:', symbolList);
-
-    // Fetch current prices from Binance for all symbols
-    const binancePrices = await fetchMultipleBinancePrices(symbolList);
-
-    console.log('[API] Fetched Binance prices for liquidations:', binancePrices);
-
-    let transformedData: Liquidation[] = liquidationList.map(item => {
-      // Use symbol from params only - Coinalyze API doesn't return symbol in liquidation data
-      // The 's' field in Coinalyze is "short volume" (number), not symbol
-      const liquidationSymbol = symbols.split(',')[0];
-
-      const longLiq = item.l || item.long_volume || item.long || 0;
-      const shortLiq = item.s || item.short || item.short_volume || item.sv || 0;
-      const side = longLiq > shortLiq ? 'long' : 'short';
-
-      console.log('[DEBUG] Liquidation item data:', { item, longLiq, shortLiq, side });
-
-      const rawTime = item.t || item.time || item.timestamp || 0;
-      // Convert to seconds if milliseconds, handle edge cases
-      let timestamp: number;
-      if (!rawTime || typeof rawTime !== 'number') {
-        timestamp = Math.floor(Date.now() / 1000); // Use current time as fallback
-      } else {
-        timestamp = rawTime < 10000000000 ? rawTime : Math.floor(rawTime / 1000);
-      }
-
-      // Convert to Binance format (remove _PERP.A suffix) - must match fetchMultipleBinancePrices
-      const binanceSymbolKey = liquidationSymbol.replace('_PERP.A', '').replace('PERP.A', '');
-
-      console.log('[DEBUG] Price lookup:', { liquidationSymbol, binanceSymbolKey, binancePrices });
-
-      // Get price from Binance - fallback to item.price if available
-      const binancePrice = binancePrices[binanceSymbolKey] || 0;
-      const liquidationPrice = item.price || binancePrice;
-
-      // Debug log for timestamp transformation
-      console.log('[API] Timestamp transformation:', { rawTime, timestamp, item });
-
-      return {
-        id: String(rawTime),
-        timestamp: String(timestamp),
-        amount: item.value_usd || (longLiq + shortLiq),
-        exchange: item.exchange || 'unknown',
-        side,
-        price: liquidationPrice,
-        symbol: liquidationSymbol,
-        quantity: longLiq + shortLiq,
-        long_volume: longLiq,
-        short_volume: shortLiq
-      };
-    });
-
-    if (params?.amount_min !== undefined) {
-      transformedData = transformedData.filter(i => i.amount >= params.amount_min!);
-    }
-    if (params?.amount_max !== undefined) {
-      transformedData = transformedData.filter(i => i.amount <= params.amount_max!);
-    }
-
-    return {
-      data: {
-        data: transformedData,
-        total: transformedData.length,
-        page: 1,
-        page_size: transformedData.length,
-        has_next: false,
-        has_prev: false
-      }
-    };
+    activeRequests.set(cacheKey, fetchPromise);
+    return fetchPromise;
   },
 
   getOne: async (id: string): Promise<any> => {
@@ -319,7 +290,10 @@ export const liquidationsApi = {
     };
   },
 
-  getSymbols: async (): Promise<{ symbol: string; name: string; baseAsset: string }[]> => {
+  getSymbols: async (): Promise<{ symbol: string; name: string; baseAsset: string; rank?: number; marketCap?: number; category: 'Perpetual' | 'Futures' | 'Spot' }[]> => {
+    const cached = cache.get('symbols');
+    if (cached) return cached as any;
+
     const popularNames: Record<string, string> = {
       'BTC': 'Bitcoin', 'ETH': 'Ethereum', 'SOL': 'Solana', 'XRP': 'Ripple',
       'ADA': 'Cardano', 'DOGE': 'Dogecoin', 'DOT': 'Polkadot', 'MATIC': 'Polygon',
@@ -329,27 +303,73 @@ export const liquidationsApi = {
     };
 
     try {
-      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo', { timeout: 10000 });
-      const symbolData = response.data.symbols
-        .filter((s: any) => s.quoteAsset === 'USDT' && s.status === 'TRADING')
-        .map((s: any) => {
-          const base = s.baseAsset;
-          const name = popularNames[base] || base;
-          return {
-            symbol: `${s.symbol}_PERP.A`,
-            name: name,
-            baseAsset: base
-          };
-        });
+      let marketCapMap: Record<string, { rank: number; marketCap: number }> = {};
+      try {
+        const cgUrl = isProduction
+          ? 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false'
+          : '/api/coingecko/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false';
+        const cgResponse = await axios.get(cgUrl, { timeout: 8000 });
+        if (Array.isArray(cgResponse.data)) {
+          cgResponse.data.forEach((coin: any) => {
+            marketCapMap[coin.symbol.toUpperCase()] = { rank: coin.market_cap_rank, marketCap: coin.market_cap };
+          });
+        }
+      } catch (e) { }
 
-      return symbolData.sort((a: any, b: any) => a.name.localeCompare(b.name));
+      const futuresUrl = isProduction ? 'https://fapi.binance.com/fapi/v1/exchangeInfo' : '/api/binance-futures/fapi/v1/exchangeInfo';
+      const spotUrl = isProduction ? 'https://api.binance.com/api/v3/exchangeInfo' : '/api/binance-spot/api/v3/exchangeInfo';
+
+      const [futuresRes, spotRes] = await Promise.all([
+        axios.get(futuresUrl, { timeout: 10000 }),
+        axios.get(spotUrl, { timeout: 10000 })
+      ]);
+
+      const symbols: any[] = [];
+      futuresRes.data.symbols.forEach((s: any) => {
+        if (s.quoteAsset !== 'USDT' || s.status !== 'TRADING') return;
+        const base = s.baseAsset;
+        const cgData = marketCapMap[base];
+        const category = s.contractType === 'PERPETUAL' ? 'Perpetual' : 'Futures';
+        symbols.push({
+          symbol: category === 'Perpetual' ? `${s.symbol}_PERP.A` : s.symbol,
+          name: popularNames[base] || base,
+          baseAsset: base,
+          rank: cgData?.rank || 9999,
+          marketCap: cgData?.marketCap || 0,
+          category
+        });
+      });
+
+      spotRes.data.symbols.forEach((s: any) => {
+        if (s.quoteAsset !== 'USDT' || s.status !== 'TRADING') return;
+        const base = s.baseAsset;
+        const cgData = marketCapMap[base];
+        if (cgData || popularNames[base]) {
+          symbols.push({
+            symbol: s.symbol,
+            name: popularNames[base] || base,
+            baseAsset: base,
+            rank: cgData?.rank || 9999,
+            marketCap: cgData?.marketCap || 0,
+            category: 'Spot'
+          });
+        }
+      });
+
+      const sorted = symbols.sort((a, b) => {
+        const catOrder: Record<string, number> = { 'Perpetual': 1, 'Futures': 2, 'Spot': 3 };
+        if (catOrder[a.category] !== catOrder[b.category]) return catOrder[a.category] - catOrder[b.category];
+        if (a.rank !== b.rank) return a.rank - b.rank;
+        return a.name.localeCompare(b.name);
+      });
+
+      cache.set('symbols', sorted, 60); // 1h cache for symbols
+      return sorted;
     } catch (error) {
-      console.error('[API] Error fetching symbols from Binance:', error);
       return [
-        { symbol: 'BTCUSDT_PERP.A', name: 'Bitcoin', baseAsset: 'BTC' },
-        { symbol: 'ETHUSDT_PERP.A', name: 'Ethereum', baseAsset: 'ETH' },
-        { symbol: 'SOLUSDT_PERP.A', name: 'Solana', baseAsset: 'SOL' },
-        { symbol: 'XRPUSDT_PERP.A', name: 'Ripple', baseAsset: 'XRP' }
+        { symbol: 'BTCUSDT_PERP.A', name: 'Bitcoin', baseAsset: 'BTC', rank: 1, marketCap: 1.2e12, category: 'Perpetual' },
+        { symbol: 'ETHUSDT_PERP.A', name: 'Ethereum', baseAsset: 'ETH', rank: 2, marketCap: 3.5e11, category: 'Perpetual' },
+        { symbol: 'BTCUSDT', name: 'Bitcoin', baseAsset: 'BTC', rank: 1, marketCap: 1.2e12, category: 'Spot' },
       ];
     }
   },
@@ -363,55 +383,57 @@ export const pricesApi = {
     end_date?: string;
   }): Promise<any> => {
     const symbols = params?.symbol || 'BTCUSDT_PERP.A';
-
-    // Normalize Coinalyze symbol format (e.g., BTCUSDT_PERP.A) to Binance format (BTCUSDT)
     const binanceSymbol = symbols.replace('_PERP.A', '').replace('PERP.A', '');
+    const cacheKey = `prices_${symbols}_${params?.start_date}_${params?.end_date}`;
 
-    // Use direct API call instead of proxy
-    const baseUrl = 'https://api.binance.com';
+    try {
+      const cached = await dbCache.get<any>(cacheKey);
+      if (cached) return cached;
+    } catch (e) { }
 
     let binanceUrl: string;
+    const baseUrl = isProduction ? 'https://api.binance.com' : '/api/binance-spot';
 
     if (params?.start_date || params?.end_date) {
-      // Explicit date range was requested
       const toTime = params?.end_date ? Math.floor(new Date(params.end_date).getTime()) : Date.now();
       const fromTime = params?.start_date ? Math.floor(new Date(params.start_date).getTime()) : toTime - (30 * 24 * 60 * 60 * 1000);
-      // Cap endTime to avoid sending future timestamps from a skewed system clock
       const safeEndTime = Math.min(toTime, Date.now());
       const safeStartTime = Math.min(fromTime, safeEndTime - 1000);
       binanceUrl = `${baseUrl}/api/v3/klines?symbol=${binanceSymbol}&interval=1d&startTime=${safeStartTime}&endTime=${safeEndTime}&limit=1000`;
     } else {
-      // No date range given — just get the latest 365 candles, no time params
-      // This is safe regardless of what Date.now() returns
       binanceUrl = `${baseUrl}/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=365`;
     }
 
-    // Use direct API call
-    const response = await axios.get(binanceUrl, { timeout: 30000 });
-    const data = response.data;
+    try {
+      const response = await axios.get(binanceUrl, { timeout: 30000 });
+      const data = response.data;
+      const formattedData: Price[] = data.map((item: any) => ({
+        id: String(item[0]),
+        symbol: binanceSymbol,
+        timestamp: String(Math.floor(item[0] / 1000)),
+        open: parseFloat(item[1]),
+        high: parseFloat(item[2]),
+        low: parseFloat(item[3]),
+        close: parseFloat(item[4]),
+        price: parseFloat(item[4]),
+        volume: parseFloat(item[5])
+      }));
 
-    const formattedData: Price[] = data.map((item: any) => ({
-      id: String(item[0]),
-      symbol: binanceSymbol,
-      timestamp: String(Math.floor(item[0] / 1000)),
-      open: parseFloat(item[1]),
-      high: parseFloat(item[2]),
-      low: parseFloat(item[3]),
-      close: parseFloat(item[4]),
-      price: parseFloat(item[4]), // Mapping for compatibility
-      volume: parseFloat(item[5])
-    }));
-
-    return {
-      data: {
-        data: formattedData,
-        total: formattedData.length,
-        page: 1,
-        page_size: formattedData.length,
-        has_next: false,
-        has_prev: false
-      }
-    };
+      const result = {
+        data: {
+          data: formattedData,
+          total: formattedData.length,
+          page: 1,
+          page_size: formattedData.length,
+          has_next: false,
+          has_prev: false
+        }
+      };
+      await dbCache.set(cacheKey, result, 10); // 10 min cache for price history
+      return result;
+    } catch (error) {
+      throw error;
+    }
   },
 };
 

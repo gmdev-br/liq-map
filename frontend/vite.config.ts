@@ -20,6 +20,21 @@ export default defineConfig({
         target: 'https://api.coinalyze.net',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/coinalyze/, '/v1/liquidation-history')
+      },
+      '/api/binance-spot': {
+        target: 'https://api.binance.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/binance-spot/, '')
+      },
+      '/api/binance-futures': {
+        target: 'https://fapi.binance.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/binance-futures/, '')
+      },
+      '/api/coingecko': {
+        target: 'https://api.coingecko.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/coingecko/, '/api/v3')
       }
     }
   },

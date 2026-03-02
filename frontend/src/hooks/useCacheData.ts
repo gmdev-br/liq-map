@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { cache } from '@/utils/cache';
+import { dbCache } from '@/utils/db';
+
+const isLargeDataKey = (key: string) =>
+    key.startsWith('liquidation_') ||
+    key.startsWith('liq_') ||
+    key.startsWith('prices_');
 
 interface UseCacheDataOptions<T> {
     cacheKey: string;
@@ -16,7 +22,7 @@ interface UseCacheDataResult<T> {
     error: Error | null;
     refetch: (forceRefresh?: boolean) => Promise<void>;
     isFromCache: boolean;
-    clearCache: () => void;
+    clearCache: () => void | Promise<void>;
 }
 
 export function useCacheData<T>({
@@ -40,7 +46,13 @@ export function useCacheData<T>({
 
         try {
             if (!forceRefresh) {
-                const cachedData = cache.get<T>(cacheKey);
+                let cachedData: T | null = null;
+                if (isLargeDataKey(cacheKey)) {
+                    cachedData = await dbCache.get<T>(cacheKey);
+                } else {
+                    cachedData = cache.get<T>(cacheKey);
+                }
+
                 if (cachedData !== null) {
                     setData(cachedData);
                     setIsFromCache(true);
@@ -52,7 +64,13 @@ export function useCacheData<T>({
 
             setIsFromCache(false);
             const freshData = await fetchFn();
-            cache.set(cacheKey, freshData, ttlMinutes);
+
+            if (isLargeDataKey(cacheKey)) {
+                await dbCache.set(cacheKey, freshData, ttlMinutes);
+            } else {
+                cache.set(cacheKey, freshData, ttlMinutes);
+            }
+
             setData(freshData);
             onSuccess?.(freshData);
         } catch (err) {
@@ -68,8 +86,12 @@ export function useCacheData<T>({
         return fetchData(forceRefresh);
     }, [fetchData]);
 
-    const clearCache = useCallback(() => {
-        cache.remove(cacheKey);
+    const clearCache = useCallback(async () => {
+        if (isLargeDataKey(cacheKey)) {
+            await dbCache.remove(cacheKey);
+        } else {
+            cache.remove(cacheKey);
+        }
         setData(null);
     }, [cacheKey]);
 
@@ -102,7 +124,7 @@ interface UseCacheDataMultipleResult<T> {
     errors: Error[];
     refetch: (forceRefresh?: boolean) => Promise<void>;
     isFromCache: boolean[];
-    clearCache: () => void;
+    clearCache: () => void | Promise<void>;
 }
 
 export function useCacheDataMultiple<T>({
@@ -133,7 +155,13 @@ export function useCacheDataMultiple<T>({
                 const fetchFn = fetchFns[i];
 
                 if (!forceRefresh) {
-                    const cachedData = cache.get<T>(key);
+                    let cachedData: T | null = null;
+                    if (isLargeDataKey(key)) {
+                        cachedData = await dbCache.get<T>(key);
+                    } else {
+                        cachedData = cache.get<T>(key);
+                    }
+
                     if (cachedData !== null) {
                         results[i] = cachedData;
                         fromCacheFlags[i] = true;
@@ -144,7 +172,11 @@ export function useCacheDataMultiple<T>({
                 fromCacheFlags[i] = false;
                 try {
                     const freshData = await fetchFn();
-                    cache.set(key, freshData, ttlMinutes);
+                    if (isLargeDataKey(key)) {
+                        await dbCache.set(key, freshData, ttlMinutes);
+                    } else {
+                        cache.set(key, freshData, ttlMinutes);
+                    }
                     results[i] = freshData;
                 } catch (err) {
                     const errorObj = err instanceof Error ? err : new Error(String(err));
@@ -178,8 +210,14 @@ export function useCacheDataMultiple<T>({
         return fetchData(forceRefresh);
     }, [fetchData]);
 
-    const clearCache = useCallback(() => {
-        cacheKeys.forEach(key => cache.remove(key));
+    const clearCache = useCallback(async () => {
+        for (const key of cacheKeys) {
+            if (isLargeDataKey(key)) {
+                await dbCache.remove(key);
+            } else {
+                cache.remove(key);
+            }
+        }
         setData([]);
         setIsFromCache([]);
     }, [cacheKeys]);

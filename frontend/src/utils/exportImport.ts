@@ -20,7 +20,7 @@ export function exportToCSV(data: any[], filename: string = 'data.csv'): void {
     const headers = Object.keys(data[0]);
     const csvContent = [
         headers.join(','),
-        ...data.map(row => 
+        ...data.map(row =>
             headers.map(header => {
                 const value = row[header];
                 if (value === null || value === undefined) return '';
@@ -59,12 +59,12 @@ export function exportToJSON(data: any[], metadata?: Record<string, any>, filena
 export function importFromCSV(file: File): Promise<any[]> {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        
+
         reader.onload = (event) => {
             try {
                 const text = event.target?.result as string;
                 const lines = text.split('\n').filter(line => line.trim());
-                
+
                 if (lines.length < 2) {
                     reject(new Error('CSV file is empty or invalid'));
                     return;
@@ -98,22 +98,15 @@ export function importFromCSV(file: File): Promise<any[]> {
     });
 }
 
-export function importFromJSON(file: File): Promise<any[]> {
+export function importFromJSON(file: File): Promise<any> {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        
+
         reader.onload = (event) => {
             try {
                 const text = event.target?.result as string;
                 const parsed = JSON.parse(text);
-                
-                if (parsed.data && Array.isArray(parsed.data)) {
-                    resolve(parsed.data);
-                } else if (Array.isArray(parsed)) {
-                    resolve(parsed);
-                } else {
-                    reject(new Error('Invalid JSON format: expected data array'));
-                }
+                resolve(parsed);
             } catch (error) {
                 reject(error);
             }
@@ -128,11 +121,11 @@ function parseCSVLine(line: string): string[] {
     const result: string[] = [];
     let current = '';
     let inQuotes = false;
-    
+
     for (let i = 0; i < line.length; i++) {
         const char = line[i];
         const nextChar = line[i + 1];
-        
+
         if (char === '"') {
             if (inQuotes && nextChar === '"') {
                 current += '"';
@@ -147,7 +140,7 @@ function parseCSVLine(line: string): string[] {
             current += char;
         }
     }
-    
+
     result.push(current.trim());
     return result;
 }

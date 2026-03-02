@@ -16,7 +16,37 @@ class CacheManager {
         try {
             localStorage.setItem(this.prefix + key, JSON.stringify(entry));
         } catch (error) {
-            console.error('Error saving to cache:', error);
+            if (error instanceof Error && (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
+                console.warn('Cache quota exceeded, clearing old entries...');
+                this.makeSpace();
+                try {
+                    localStorage.setItem(this.prefix + key, JSON.stringify(entry));
+                } catch (retryError) {
+                    console.error('Failed to save to cache even after clearing space', retryError);
+                }
+            } else {
+                console.error('Error saving to cache:', error);
+            }
+        }
+    }
+
+    private makeSpace(): void {
+        try {
+            const keys = Object.keys(localStorage)
+                .filter(k => k.startsWith(this.prefix))
+                .map(k => ({
+                    key: k,
+                    timestamp: JSON.parse(localStorage.getItem(k) || '{}').timestamp || 0
+                }))
+                .sort((a, b) => a.timestamp - b.timestamp);
+
+            // Remove oldest 50% of cache entries
+            const toRemove = Math.max(1, Math.floor(keys.length / 2));
+            for (let i = 0; i < toRemove; i++) {
+                localStorage.removeItem(keys[i].key);
+            }
+        } catch (e) {
+            localStorage.clear(); // Nuclear option if parsing fails
         }
     }
 
