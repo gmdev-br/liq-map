@@ -39,6 +39,86 @@ import {
 import zoomPlugin from 'chartjs-plugin-zoom';
 import { Chart } from 'react-chartjs-2';
 
+// Custom crosshair plugin with axis labels
+const crosshairPlugin = {
+    id: 'crosshair',
+    afterDraw: (chart: any) => {
+        if (chart.tooltip?._active?.length) {
+            const { ctx, chartArea, scales } = chart;
+            const activePoint = chart.tooltip._active[0];
+            const { x, y } = activePoint.element;
+            const horizontal = chart.options.indexAxis === 'y';
+
+            ctx.save();
+
+            // Draw crosshair lines
+            ctx.beginPath();
+            ctx.setLineDash([5, 5]);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.8)'; // slate-400
+
+            ctx.moveTo(x, chartArea.top);
+            ctx.lineTo(x, chartArea.bottom);
+            ctx.moveTo(chartArea.left, y);
+            ctx.lineTo(chartArea.right, y);
+            ctx.stroke();
+
+            // Draw axis labels (bubbles)
+            const drawLabel = (scale: any, value: number, isX: boolean) => {
+                const label = scale.getLabelForValue(value);
+                if (!label) return;
+
+                ctx.font = 'bold 11px Inter, sans-serif';
+                const textMetrics = ctx.measureText(label);
+                const padding = 6;
+                const width = textMetrics.width + padding * 2;
+                const height = 20;
+
+                let rectX, rectY;
+                if (isX) {
+                    rectX = x - width / 2;
+                    rectY = chartArea.bottom;
+                } else {
+                    rectX = chartArea.left - width;
+                    rectY = y - height / 2;
+                }
+
+                // Background bubble
+                ctx.fillStyle = '#1e293b'; // slate-900
+                ctx.beginPath();
+                if (ctx.roundRect) {
+                    ctx.roundRect(rectX, rectY, width, height, 4);
+                } else {
+                    ctx.rect(rectX, rectY, width, height);
+                }
+                ctx.fill();
+
+                // Text
+                ctx.fillStyle = '#f1f5f9'; // slate-50
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, rectX + width / 2, rectY + height / 2);
+            };
+
+            // Values for labels
+            if (scales.x && scales.y) {
+                // Label for scale that represents categories (Prices/Intervals)
+                const categoryScale = horizontal ? scales.y : scales.x;
+                const categoryValue = categoryScale.getValueForPixel(horizontal ? y : x);
+                drawLabel(categoryScale, categoryValue, !horizontal);
+
+                // Label for scale that represents values (Volumes)
+                const valueScale = horizontal ? scales.x : scales.y;
+                const pointValue = chart.data.datasets[activePoint.datasetIndex].data[activePoint.index];
+                const valuePixels = valueScale.getPixelForValue(pointValue);
+                drawLabel(valueScale, pointValue, horizontal);
+            }
+
+            ctx.restore();
+        }
+    }
+};
+
 // Register Chart.js components
 ChartJS.register(
     CategoryScale,
@@ -52,7 +132,8 @@ ChartJS.register(
     Title,
     ChartTooltip,
     ChartLegend,
-    zoomPlugin
+    zoomPlugin,
+    crosshairPlugin
 );
 
 interface HistoricalLiquidation {
@@ -111,6 +192,8 @@ interface LiquidationChartProps {
     showSD1?: boolean;
     showSD2?: boolean;
     showSD3?: boolean;
+    horizontal?: boolean;
+    symbol: string;
 }
 
 const LiquidationChart = memo(function LiquidationChart({
@@ -127,70 +210,79 @@ const LiquidationChart = memo(function LiquidationChart({
     showSD0_5 = false,
     showSD1 = true,
     showSD2 = true,
-    showSD3 = true
+    showSD3 = true,
+    horizontal = false,
+    symbol,
 }: LiquidationChartProps) {
     const chartRef = useRef<any>(null);
 
-    const resetZoom = () => {
+    // Zoom/Pan persistence keys per symbol
+    const zoomKeys = useMemo(() => ({
+        min: `liquidation_chart_zoom_min_${symbol}`,
+        max: `liquidation_chart_zoom_max_${symbol}`,
+    }), [symbol]);
+
+    const resetZoom = useCallback(() => {
         if (chartRef.current) {
             chartRef.current.resetZoom();
+            localStorage.removeItem(zoomKeys.min);
+            localStorage.removeItem(zoomKeys.max);
         }
-    };
+    }, [zoomKeys]);
 
-    // Sort data by price for proper x-axis ordering - memoized to prevent unnecessary re-renders
+    // Sort data for proper axis alignment
     const sortedData = useMemo(() => [...data].sort((a, b) => a.price - b.price), [data]);
 
-    // Centralized yMax calculation for all vertical lines
+    // Calculate yMax for marker scaling
     const yMax = useMemo(() => {
         if (sortedData.length === 0) return 0;
-        const maxVolume = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
-        return maxVolume * 1.1;
+        const maxVol = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
+        return maxVol * 1.1;
     }, [sortedData]);
 
-    // Memoize vertical lines at multiples of gridLineInterval - only recalculates when sortedData changes
-    // NOT when currentPrice changes, avoiding unnecessary re-renders
-    // OPTIMIZATION: Uses a single dataset with segments instead of multiple datasets
-    const verticalLinesDataset = useMemo(() => {
-        if (sortedData.length === 0 || gridLineInterval <= 0) return null;
+    const labels = useMemo(() => sortedData.map(d => formatCurrency(d.price)), [sortedData, formatCurrency]);
 
-        // Create labels array for lookup (same as used in the chart)
-        const priceLabels = sortedData.map(d => formatCurrency(d.price));
+    // Binary search helper to find the index of the closest price
+    const findClosestIndex = useCallback((targetPrice: number) => {
+        if (sortedData.length === 0) return 0;
+        let low = 0;
+        let high = sortedData.length - 1;
 
-        // Get the price range of the displayed data
-        const minDataPrice = sortedData[0].price;
-        const maxDataPrice = sortedData[sortedData.length - 1].price;
-
-        // Calculate multiples of gridLineInterval within the data range
-        const firstMultiple = Math.ceil(minDataPrice / gridLineInterval) * gridLineInterval;
-        const lastMultiple = Math.floor(maxDataPrice / gridLineInterval) * gridLineInterval;
-
-        // Build a single dataset with all vertical line segments
-        const lineData: any[] = [];
-
-        // Add vertical line for each multiple of gridLine interval
-        for (let multiple = firstMultiple; multiple <= lastMultiple; multiple += gridLineInterval) {
-            // Find the index closest to this price multiple
-            const prices = sortedData.map(d => d.price);
-            const closestIndex = prices.reduce((closestIdx, price, idx) => {
-                return Math.abs(price - multiple) < Math.abs(prices[closestIdx] - multiple) ? idx : closestIdx;
-            }, 0);
-
-            // Use the formatted label string as x value for category scale alignment
-            const closestLabel = priceLabels[closestIndex];
-
-            // Add two points for the vertical line (bottom to top)
-            lineData.push(
-                { x: closestLabel, y: 0 },
-                { x: closestLabel, y: yMax }
-            );
-
-            // Add null to create a gap before the next line
-            if (multiple + gridLineInterval <= lastMultiple) {
-                lineData.push({ x: null, y: null });
+        while (low < high) {
+            const mid = Math.floor((low + high) / 2);
+            if (sortedData[mid].price < targetPrice) {
+                low = mid + 1;
+            } else {
+                high = mid;
             }
         }
 
-        // Return a single dataset with all vertical lines
+        // Check if the previous element is closer
+        if (low > 0 && Math.abs(sortedData[low - 1].price - targetPrice) < Math.abs(sortedData[low].price - targetPrice)) {
+            return low - 1;
+        }
+        return low;
+    }, [sortedData]);
+
+    // Grid lines dataset
+    const verticalLinesDataset = useMemo(() => {
+        if (sortedData.length === 0 || gridLineInterval <= 0) return null;
+        const minP = sortedData[0].price;
+        const maxP = sortedData[sortedData.length - 1].price;
+        const first = Math.ceil(minP / gridLineInterval) * gridLineInterval;
+        const last = Math.floor(maxP / gridLineInterval) * gridLineInterval;
+        const lineData: any[] = [];
+
+        for (let m = first; m <= last; m += gridLineInterval) {
+            const idx = findClosestIndex(m);
+            const label = labels[idx];
+            if (horizontal) {
+                lineData.push({ x: 0, y: label }, { x: yMax, y: label }, { x: null, y: null });
+            } else {
+                lineData.push({ x: label, y: 0 }, { x: label, y: yMax }, { x: null, y: null });
+            }
+        }
+
         return {
             type: 'line' as const,
             label: '',
@@ -201,407 +293,158 @@ const LiquidationChart = memo(function LiquidationChart({
             borderDash: lineStyles.thousandLines.dash,
             pointRadius: 0,
             pointHoverRadius: 0,
-            yAxisID: 'y-markers',
-            xAxisID: 'x',
+            yAxisID: horizontal ? 'y' : 'y-markers',
+            xAxisID: horizontal ? 'x-markers' : 'x',
             order: 0,
-            spanGaps: false, // Important: creates separate segments for each vertical line
+            spanGaps: false,
         };
-    }, [sortedData, yMax, lineStyles.thousandLines, gridLineInterval]);
+    }, [sortedData, labels, yMax, lineStyles.thousandLines, gridLineInterval, horizontal]);
 
-    // Create chart data based on groupBy selection - memoized to preserve zoom state
+    // Main datasets
     const chartData: ChartData<'bar' | 'line'> = useMemo(() => {
-        const labels = sortedData.map((d) => formatCurrency(d.price));
         const datasets: any[] = groupBy === 'stacked'
-            ? [{
-                type: 'bar' as const,
-                label: 'Total Volume',
-                data: sortedData.map((d) => d.long_volume + d.short_volume),
-                backgroundColor: '#3b82f6',
-                borderRadius: 4,
-            }]
+            ? [{ type: 'bar' as const, label: 'Total Volume', data: sortedData.map(d => d.long_volume + d.short_volume), backgroundColor: '#3b82f6', borderRadius: 4 }]
             : [
-                {
-                    type: 'bar' as const,
-                    label: 'Longs',
-                    data: sortedData.map((d) => d.long_volume),
-                    backgroundColor: '#10b981',
-                    borderRadius: 4,
-                },
-                {
-                    type: 'bar' as const,
-                    label: 'Shorts',
-                    data: sortedData.map((d) => d.short_volume),
-                    backgroundColor: '#ef4444',
-                    borderRadius: 4,
-                },
+                { type: 'bar' as const, label: 'Longs', data: sortedData.map(d => d.long_volume), backgroundColor: '#10b981', borderRadius: 4 },
+                { type: 'bar' as const, label: 'Shorts', data: sortedData.map(d => d.short_volume), backgroundColor: '#ef4444', borderRadius: 4 }
             ];
 
-        // Add memoized vertical lines at multiples of 1000 (static, only changes when sortedData changes)
-        // OPTIMIZATION: Now a single dataset instead of multiple datasets
-        if (verticalLinesDataset) {
-            datasets.push(verticalLinesDataset);
-        }
+        if (verticalLinesDataset) datasets.push(verticalLinesDataset);
 
-        // Add vertical line at current price if we have a price value and data
         if (currentPrice && sortedData.length > 0) {
-            // Get the price range of the displayed data
-            const minDataPrice = sortedData[0].price;
-            const maxDataPrice = sortedData[sortedData.length - 1].price;
-
-            // Only draw the line if current price is within or near the displayed data range
-            const priceMargin = (maxDataPrice - minDataPrice) * 0.05;
-
-            if (currentPrice >= minDataPrice - priceMargin && currentPrice <= maxDataPrice + priceMargin) {
-                // Create labels array for lookup
-                const priceLabels = sortedData.map(d => formatCurrency(d.price));
-
-                // Find the index closest to current price for vertical line placement
-                const prices = sortedData.map(d => d.price);
-                const closestIndex = prices.reduce((closestIdx, price, idx) => {
-                    return Math.abs(price - currentPrice) < Math.abs(prices[closestIdx] - currentPrice) ? idx : closestIdx;
-                }, 0);
-
-                const closestLabel = priceLabels[closestIndex];
-
-                // Create a vertical line using label for alignment
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: '',
-                    data: [
-                        { x: closestLabel, y: 0 },
-                        { x: closestLabel, y: yMax },
-                    ],
-                    borderColor: lineStyles.btcQuoteLine.color,
-                    backgroundColor: 'transparent',
-                    borderWidth: lineStyles.btcQuoteLine.width,
-                    borderDash: lineStyles.btcQuoteLine.dash,
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true, // Connect points with a line to create vertical line
-                });
-            }
+            const idx = findClosestIndex(currentPrice);
+            const label = labels[idx];
+            datasets.push({
+                type: 'scatter' as const,
+                label: '',
+                data: horizontal ? [{ x: 0, y: label }, { x: yMax, y: label }] : [{ x: label, y: 0 }, { x: label, y: yMax }],
+                borderColor: lineStyles.btcQuoteLine.color,
+                backgroundColor: 'transparent',
+                borderWidth: lineStyles.btcQuoteLine.width,
+                borderDash: lineStyles.btcQuoteLine.dash,
+                pointRadius: 0,
+                pointHoverRadius: 0,
+                yAxisID: horizontal ? 'y' : 'y-markers',
+                xAxisID: horizontal ? 'x-markers' : 'x',
+                order: 0,
+                showLine: true,
+            });
         }
 
-        // Add standard deviation regions and mean line if data is available
         if (stdDevData && sortedData.length > 0) {
-            const prices = sortedData.map(d => d.price);
-            const priceLabels = sortedData.map(d => formatCurrency(d.price));
-
-            // Helper function to find closest label for a price
-            const findClosestLabel = (targetPrice: number) => {
-                const closestIndex = prices.reduce((closestIdx, price, idx) => {
-                    return Math.abs(price - targetPrice) < Math.abs(prices[closestIdx] - targetPrice) ? idx : closestIdx;
-                }, 0);
-                return priceLabels[closestIndex];
-            };
+            const fl = (p: number) => labels[findClosestIndex(p)];
 
             const { mean, regions } = stdDevData;
-            const dataMin = Math.min(...prices);
-            const dataMax = Math.max(...prices);
+            const markerAxisConfig = horizontal ? { yAxisID: 'y', xAxisID: 'x-markers' } : { yAxisID: 'y-markers', xAxisID: 'x' };
 
-            // Add mean line (purple solid) - only if enabled
-            if (showMeanLine && mean >= dataMin && mean <= dataMax) {
-                const meanLabel = findClosestLabel(mean);
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: 'Média',
-                    data: [
-                        { x: meanLabel, y: 0 },
-                        { x: meanLabel, y: yMax },
-                    ],
-                    borderColor: '#8b5cf6', // Purple
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true,
-                });
+            if (showMeanLine) {
+                const ml = fl(mean);
+                datasets.push({ type: 'scatter' as const, label: 'Média', data: horizontal ? [{ x: 0, y: ml }, { x: yMax, y: ml }] : [{ x: ml, y: 0 }, { x: ml, y: yMax }], borderColor: '#8b5cf6', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, ...markerAxisConfig, order: 0, showLine: true });
             }
 
-            // Add ±0.25σ region boundaries (pink) - only if enabled
-            if (showSD0_25) {
-                const sd0_25MinLabel = findClosestLabel(regions.sd0_25[0]);
-                const sd0_25MaxLabel = findClosestLabel(regions.sd0_25[1]);
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: '±0.25σ (20%)',
-                    data: [
-                        { x: sd0_25MinLabel, y: 0 },
-                        { x: sd0_25MinLabel, y: yMax },
-                        { x: null, y: null },
-                        { x: sd0_25MaxLabel, y: 0 },
-                        { x: sd0_25MaxLabel, y: yMax },
-                    ],
-                    borderColor: '#ec4899', // Pink
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [2, 2],
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true,
-                    spanGaps: false,
-                });
-            }
+            const addSD = (label: string, pMin: number, pMax: number, color: string, dash: number[]) => {
+                const lA = fl(pMin), lB = fl(pMax);
+                datasets.push({ type: 'scatter' as const, label, data: horizontal ? [{ x: 0, y: lA }, { x: yMax, y: lA }, { x: null, y: null }, { x: 0, y: lB }, { x: yMax, y: lB }] : [{ x: lA, y: 0 }, { x: lA, y: yMax }, { x: null, y: null }, { x: lB, y: 0 }, { x: lB, y: yMax }], borderColor: color, backgroundColor: 'transparent', borderWidth: 2, borderDash: dash, pointRadius: 0, ...markerAxisConfig, order: 0, showLine: true, spanGaps: false });
+            };
 
-            // Add ±0.5σ region boundaries (cyan) - only if enabled
-            if (showSD0_5) {
-                const sd0_5MinLabel = findClosestLabel(regions.sd0_5[0]);
-                const sd0_5MaxLabel = findClosestLabel(regions.sd0_5[1]);
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: '±0.5σ (38%)',
-                    data: [
-                        { x: sd0_5MinLabel, y: 0 },
-                        { x: sd0_5MinLabel, y: yMax },
-                        { x: null, y: null },
-                        { x: sd0_5MaxLabel, y: 0 },
-                        { x: sd0_5MaxLabel, y: yMax },
-                    ],
-                    borderColor: '#06b6d4', // Cyan
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [3, 3],
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true,
-                    spanGaps: false,
-                });
-            }
-
-            // Add ±1σ region boundaries (green) - only if enabled
-            if (showSD1) {
-                const sd1MinLabel = findClosestLabel(regions.sd1[0]);
-                const sd1MaxLabel = findClosestLabel(regions.sd1[1]);
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: '±1σ (68%)',
-                    data: [
-                        { x: sd1MinLabel, y: 0 },
-                        { x: sd1MinLabel, y: yMax },
-                        { x: null, y: null },
-                        { x: sd1MaxLabel, y: 0 },
-                        { x: sd1MaxLabel, y: yMax },
-                    ],
-                    borderColor: '#10b981', // Green
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true,
-                    spanGaps: false,
-                });
-            }
-
-            // Add ±2σ region boundaries (yellow) - only if enabled
-            if (showSD2) {
-                const sd2MinLabel = findClosestLabel(regions.sd2[0]);
-                const sd2MaxLabel = findClosestLabel(regions.sd2[1]);
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: '±2σ (95%)',
-                    data: [
-                        { x: sd2MinLabel, y: 0 },
-                        { x: sd2MinLabel, y: yMax },
-                        { x: null, y: null },
-                        { x: sd2MaxLabel, y: 0 },
-                        { x: sd2MaxLabel, y: yMax },
-                    ],
-                    borderColor: '#f59e0b', // Yellow/Orange
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [8, 4],
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true,
-                    spanGaps: false,
-                });
-            }
-
-            // Add ±3σ region boundaries (red) - only if enabled
-            if (showSD3) {
-                const sd3MinLabel = findClosestLabel(regions.sd3[0]);
-                const sd3MaxLabel = findClosestLabel(regions.sd3[1]);
-                datasets.push({
-                    type: 'scatter' as const,
-                    label: '±3σ (99.7%)',
-                    data: [
-                        { x: sd3MinLabel, y: 0 },
-                        { x: sd3MinLabel, y: yMax },
-                        { x: null, y: null },
-                        { x: sd3MaxLabel, y: 0 },
-                        { x: sd3MaxLabel, y: yMax },
-                    ],
-                    borderColor: '#ef4444', // Red
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [10, 5, 2, 5],
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    yAxisID: 'y-markers',
-                    xAxisID: 'x',
-                    order: 0,
-                    showLine: true,
-                    spanGaps: false,
-                });
-            }
+            if (showSD0_25) addSD('±0.25σ', regions.sd0_25[0], regions.sd0_25[1], '#ec4899', [2, 2]);
+            if (showSD0_5) addSD('±0.5σ', regions.sd0_5[0], regions.sd0_5[1], '#06b6d4', [3, 3]);
+            if (showSD1) addSD('±1σ', regions.sd1[0], regions.sd1[1], '#10b981', [5, 5]);
+            if (showSD2) addSD('±2σ', regions.sd2[0], regions.sd2[1], '#f59e0b', [8, 4]);
+            if (showSD3) addSD('±3σ', regions.sd3[0], regions.sd3[1], '#ef4444', [10, 5, 2, 5]);
         }
 
+        return { labels, datasets };
+    }, [sortedData, labels, groupBy, formatCurrency, currentPrice, verticalLinesDataset, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, horizontal]);
+
+    const chartOptions: ChartOptions<'bar' | 'line'> = useMemo(() => {
+        const savedMin = localStorage.getItem(zoomKeys.min);
+        const savedMax = localStorage.getItem(zoomKeys.max);
+        const persistedZoom = (savedMin && savedMax) ? (() => {
+            const minIdx = labels.indexOf(savedMin);
+            const maxIdx = labels.indexOf(savedMax);
+            return (minIdx !== -1 && maxIdx !== -1) ? { min: minIdx, max: maxIdx } : null;
+        })() : null;
+
         return {
-            labels,
-            datasets,
-        };
-    }, [sortedData, groupBy, formatCurrency, currentPrice, verticalLinesDataset, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax]);
-
-    // Memoize chart options to prevent zoom reset on re-renders
-    const chartOptions: any = useMemo(() => ({
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: {
-            mode: 'index',
-            intersect: false,
-        },
-        plugins: {
-            legend: {
-                display: groupBy !== 'stacked',
-                position: 'top',
-                labels: {
-                    color: '#64748b',
-                    usePointStyle: true,
-                    padding: 20,
-                },
-            },
-            tooltip: {
-                enabled: true,
-                backgroundColor: '#1e293b',
-                titleColor: '#f1f5f9',
-                bodyColor: '#f1f5f9',
-                borderColor: '#475569',
-                borderWidth: 1,
-                padding: 12,
-                cornerRadius: 8,
-                displayColors: true,
-                boxPadding: 4,
-                callbacks: {
-                    title: (items: any) => {
-                        if (!items.length) return '';
-                        const idx = items[0].dataIndex;
-                        const item = sortedData[idx];
-                        if (!item) return '';
-
-                        // Se houver intervalo de preço, o timestamp não é uma data real (é o preço base da faixa)
-                        // Portanto, não mostramos a data "01/01/1970"
-                        if (priceInterval > 0 || item.timestamp < 1000000000) {
-                            return `Price Range: ${formatCurrency(item.timestamp)} - ${formatCurrency(item.timestamp + (priceInterval || 0))}`;
-                        }
-
-                        const date = new Date(item.timestamp * 1000);
-                        const dateStr = date.toLocaleDateString('pt-BR');
-                        return `Price: ${formatCurrency(item.price)} | ${dateStr}`;
-                    },
-                    label: (context: any) => {
-                        const value = context.parsed.y ?? 0;
-                        if (groupBy === 'stacked') {
-                            return `  Total: ${formatCurrency(value)}`;
-                        }
-                        const color = context.dataset.label === 'Longs' ? '#10b981' : '#ef4444';
-                        return `  ${context.dataset.label}: ${formatCurrency(value)}`;
-                    },
-                    afterBody: (items: any) => {
-                        if (!items.length) return '';
-                        const idx = items[0].dataIndex;
-                        const item = sortedData[idx];
-                        if (!item) return '';
-                        const total = item.long_volume + item.short_volume;
-                        const ratio = item.long_short_ratio;
-                        return [`  ─────────────`, `  Total: ${formatCurrency(total)}`, `  L/S Ratio: ${ratio.toFixed(2)}`];
-                    },
-                },
-            },
-            zoom: {
-                pan: {
+            animation: false as const,
+            normalized: true,
+            responsive: true,
+            maintainAspectRatio: false,
+            ...(horizontal ? { indexAxis: 'y' as const } : {}),
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: groupBy !== 'stacked', position: 'top', labels: { color: '#64748b', usePointStyle: true, padding: 20 } },
+                crosshair: { enabled: true },
+                tooltip: {
                     enabled: true,
-                    mode: 'x',
+                    backgroundColor: '#1e293b',
+                    titleColor: '#f1f5f9',
+                    bodyColor: '#f1f5f9',
+                    borderColor: '#475569',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                    callbacks: {
+                        title: (items: any) => {
+                            if (!items.length) return '';
+                            const d = sortedData[items[0].dataIndex];
+                            if (!d) return '';
+                            if (priceInterval > 0 || d.timestamp < 1000000000) return `Price Range: ${formatCurrency(d.timestamp)} - ${formatCurrency(d.timestamp + priceInterval)}`;
+                            return `Price: ${formatCurrency(d.price)} | ${new Date(d.timestamp * 1000).toLocaleDateString()}`;
+                        },
+                        label: (ctx: any) => {
+                            const val = horizontal ? (ctx.parsed.x ?? 0) : (ctx.parsed.y ?? 0);
+                            return `  ${ctx.dataset.label}: ${formatCurrency(val)}`;
+                        },
+                        afterBody: (items: any) => {
+                            const d = sortedData[items[0].dataIndex];
+                            if (!d) return [];
+                            return [`  ─────────────`, `  Total: ${formatCurrency(d.long_volume + d.short_volume)}`, `  L/S Ratio: ${d.long_short_ratio.toFixed(2)}`];
+                        }
+                    }
                 },
                 zoom: {
-                    wheel: {
-                        enabled: true,
+                    pan: { enabled: true, mode: horizontal ? 'y' : 'x' },
+                    zoom: {
+                        wheel: { enabled: true },
+                        pinch: { enabled: true },
+                        mode: horizontal ? 'y' : 'x',
+                        onZoomComplete: ({ chart }: { chart: any }) => {
+                            const s = horizontal ? chart.scales.y : chart.scales.x;
+                            const minL = labels[Math.round(s.min)], maxL = labels[Math.round(s.max)];
+                            if (minL && maxL) { localStorage.setItem(zoomKeys.min, minL); localStorage.setItem(zoomKeys.max, maxL); }
+                        },
+                        onPanComplete: ({ chart }: { chart: any }) => {
+                            const s = horizontal ? chart.scales.y : chart.scales.x;
+                            const minL = labels[Math.round(s.min)], maxL = labels[Math.round(s.max)];
+                            if (minL && maxL) { localStorage.setItem(zoomKeys.min, minL); localStorage.setItem(zoomKeys.max, maxL); }
+                        },
                     },
-                    pinch: {
-                        enabled: true,
-                    },
-                    drag: {
-                        enabled: false,
-                    },
-                    mode: 'x',
-                },
+                }
             },
-        },
-        scales: {
-            x: {
-                stacked: groupBy === 'combined' || groupBy === 'stacked',
-                grid: {
-                    display: false,
-                },
-                ticks: {
-                    color: '#64748b',
-                    font: {
-                        size: 11,
-                    },
-                    maxRotation: 45,
-                    maxTicksLimit: 15,
-                },
-            },
-            y: {
-                stacked: groupBy === 'combined' || groupBy === 'stacked',
-                grid: {
-                    display: false,
-                },
-                ticks: {
-                    color: '#64748b',
-                    font: {
-                        size: 11,
-                    },
-                    callback: (value: any) => formatCurrency(Number(value)),
-                },
-            },
-            'y-markers': {
-                display: false, // Hide numeric labels for markers
-                stacked: false, // DO NOT stack marker datasets
-                min: 0,
-                max: yMax,
-            },
-        },
-    }), [groupBy, sortedData, priceInterval, formatCurrency, yMax]);
+            scales: horizontal ? {
+                y: { reverse: true, stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b' }, ...(persistedZoom ? { min: persistedZoom.min, max: persistedZoom.max } : {}) },
+                x: { stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b', callback: (v: any) => formatCurrency(Number(v)) } },
+                'x-markers': { display: false, min: 0, max: yMax, axis: 'x' }
+            } : {
+                x: { stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b' }, ...(persistedZoom ? { min: persistedZoom.min, max: persistedZoom.max } : {}) },
+                y: { stacked: groupBy === 'combined' || groupBy === 'stacked', grid: { display: false }, ticks: { color: '#64748b', callback: (v: any) => formatCurrency(Number(v)) } },
+                'y-markers': { display: false, min: 0, max: yMax }
+            }
+        };
+    }, [horizontal, groupBy, labels, zoomKeys, sortedData, priceInterval, formatCurrency, yMax]);
 
     return (
-        <div className="relative w-full h-full">
-            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions} />
+        <div className="relative w-full h-full group/chart">
+            <Chart ref={chartRef} type="bar" data={chartData} options={chartOptions as any} />
             <button
                 onClick={resetZoom}
-                className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 text-xs bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 rounded-md border border-slate-600 transition-colors"
-                title="Reset Zoom"
+                className="absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-background/90 hover:bg-background text-foreground rounded-lg border border-border shadow-lg opacity-0 group-hover/chart:opacity-100 transition-all z-20 backdrop-blur-sm"
+                title="Reset Zoom & Pan"
             >
-                <RotateCcw className="h-3 w-3" />
-                Reset
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset Zoom
             </button>
         </div>
     );
@@ -616,6 +459,10 @@ export function LiquidationTest() {
     const [amountMax, setAmountMax] = useState<string>(() => localStorage.getItem('liquidation_test_amount_max') || '');
     const [side, setSide] = useState<'all' | 'long' | 'short'>(() => (localStorage.getItem('liquidation_test_side') as 'all' | 'long' | 'short') || 'all');
     const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'combined');
+    const [chartHorizontal, setChartHorizontal] = useState(() => localStorage.getItem('liquidation_test_chart_horizontal') === 'true');
+    const [chartHeight, setChartHeight] = useState(() => Number(localStorage.getItem('liquidation_test_chart_height')) || 400);
+    const [previewHeight, setPreviewHeight] = useState(chartHeight);
+    const [isResizing, setIsResizing] = useState(false);
     const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '0');
     const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '100');
     const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '55000');
@@ -716,6 +563,40 @@ export function LiquidationTest() {
     useEffect(() => {
         localStorage.setItem('liquidation_test_group_by', groupBy);
     }, [groupBy]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_chart_horizontal', String(chartHorizontal));
+    }, [chartHorizontal]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_chart_height', String(chartHeight));
+    }, [chartHeight]);
+
+    const handleChartResizeMouseDown = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startHeight = chartHeight;
+        setIsResizing(true);
+        setPreviewHeight(startHeight);
+
+        let latestHeight = startHeight;
+
+        const onMouseMove = (ev: MouseEvent) => {
+            const delta = ev.clientY - startY;
+            latestHeight = Math.max(200, Math.min(1200, startHeight + delta));
+            setPreviewHeight(latestHeight);
+        };
+
+        const onMouseUp = () => {
+            setIsResizing(false);
+            setChartHeight(latestHeight);
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    }, [chartHeight]);
 
     useEffect(() => {
         localStorage.setItem('liquidation_test_ratio_filter', ratioFilter);
@@ -1993,6 +1874,44 @@ export function LiquidationTest() {
                             </select>
                         </div>
                         <div className="space-y-2">
+                            <label className="text-sm font-medium">Orientação do Gráfico</label>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setChartHorizontal(false)}
+                                    className={`flex-1 h-9 rounded-md text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${!chartHorizontal
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-muted text-muted-foreground hover:bg-accent'
+                                        }`}
+                                    title="Barras verticais (preços no eixo X)"
+                                >
+                                    <span style={{ display: 'inline-flex', gap: '2px', alignItems: 'flex-end' }}>
+                                        <span style={{ width: 4, height: 10, background: 'currentColor', borderRadius: 1 }} />
+                                        <span style={{ width: 4, height: 16, background: 'currentColor', borderRadius: 1 }} />
+                                        <span style={{ width: 4, height: 8, background: 'currentColor', borderRadius: 1 }} />
+                                        <span style={{ width: 4, height: 14, background: 'currentColor', borderRadius: 1 }} />
+                                    </span>
+                                    Vertical
+                                </button>
+                                <button
+                                    onClick={() => setChartHorizontal(true)}
+                                    className={`flex-1 h-9 rounded-md text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${chartHorizontal
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-muted text-muted-foreground hover:bg-accent'
+                                        }`}
+                                    title="Barras horizontais (preços no eixo Y)"
+                                >
+                                    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-start' }}>
+                                        <span style={{ width: 10, height: 4, background: 'currentColor', borderRadius: 1 }} />
+                                        <span style={{ width: 16, height: 4, background: 'currentColor', borderRadius: 1 }} />
+                                        <span style={{ width: 8, height: 4, background: 'currentColor', borderRadius: 1 }} />
+                                        <span style={{ width: 14, height: 4, background: 'currentColor', borderRadius: 1 }} />
+                                    </span>
+                                    Horizontal
+                                </button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">Alternar entre colunas e linhas</p>
+                        </div>
+                        <div className="space-y-2">
                             <label className="text-sm font-medium">Intervalo de Agrupamento ($)</label>
                             <input
                                 type="number"
@@ -2638,26 +2557,54 @@ export function LiquidationTest() {
 
             {processedData.length > 0 && (
                 <>
-                    <Card>
+                    <Card className={isResizing ? 'ring-2 ring-primary/50 transition-none' : ''}>
                         <CardHeader title="Volume de Liquidação por Preço" description="Distribuição de Longs vs Shorts" />
-                        <CardContent className="h-[400px]">
-                            <LiquidationChart
-                                data={chartData}
-                                formatCurrency={formatCurrency}
-                                groupBy={groupBy}
-                                currentPrice={currentPrice}
-                                priceInterval={priceInterval}
-                                lineStyles={lineStyles}
-                                gridLineInterval={gridLineInterval}
-                                stdDevData={stdDevData}
-                                showMeanLine={showMeanLine}
-                                showSD0_25={showSD0_25}
-                                showSD0_5={showSD0_5}
-                                showSD1={showSD1}
-                                showSD2={showSD2}
-                                showSD3={showSD3}
-                            />
-                        </CardContent>
+                        <div style={{ height: chartHeight }} className="relative">
+                            <CardContent className="h-full">
+                                <LiquidationChart
+                                    data={chartData}
+                                    formatCurrency={formatCurrency}
+                                    groupBy={groupBy}
+                                    currentPrice={currentPrice}
+                                    priceInterval={priceInterval}
+                                    lineStyles={lineStyles}
+                                    gridLineInterval={gridLineInterval}
+                                    stdDevData={stdDevData}
+                                    showMeanLine={showMeanLine}
+                                    showSD0_25={showSD0_25}
+                                    showSD0_5={showSD0_5}
+                                    showSD1={showSD1}
+                                    showSD2={showSD2}
+                                    showSD3={showSD3}
+                                    horizontal={chartHorizontal}
+                                    symbol={symbol}
+                                />
+                            </CardContent>
+
+                            {/* Visual preview of the new height (ghost line) */}
+                            {isResizing && (
+                                <div
+                                    className="absolute left-0 right-0 border-b-2 border-dashed border-primary z-50 pointer-events-none"
+                                    style={{ height: previewHeight, top: 0 }}
+                                >
+                                    <div className="absolute bottom-0 right-0 bg-primary text-white text-[10px] px-1 rounded-tl">
+                                        {previewHeight}px
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        {/* Resize handle */}
+                        <div
+                            onMouseDown={handleChartResizeMouseDown}
+                            className="flex items-center justify-center w-full h-4 cursor-ns-resize group"
+                            title="Arraste para redimensionar o gráfico"
+                        >
+                            <div className="flex gap-0.5 opacity-30 group-hover:opacity-80 transition-opacity">
+                                {[...Array(6)].map((_, i) => (
+                                    <span key={i} className="w-1 h-1 rounded-full bg-muted-foreground" />
+                                ))}
+                            </div>
+                        </div>
                         {currentPrice && (
                             <div className="pb-4 flex justify-center">
                                 <span className="text-sm font-semibold text-red-500">
