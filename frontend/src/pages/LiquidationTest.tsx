@@ -81,13 +81,13 @@ export interface ChartLineStyles {
 // Default line styles
 export const defaultLineStyles: ChartLineStyles = {
     thousandLines: {
-        color: '#64748b',
+        color: '#fbff00',
         width: 1,
-        dash: [3, 3],
+        dash: [],
     },
     btcQuoteLine: {
-        color: '#ef4444',
-        width: 2,
+        color: '#ff0000',
+        width: 3,
         dash: [5, 5],
     },
 };
@@ -610,17 +610,17 @@ const LiquidationChart = memo(function LiquidationChart({
 export function LiquidationTest() {
     const [apiKey, setApiKey] = useState(() => localStorage.getItem('coinalyze_api_key') || 'FREE');
     const [symbol, setSymbol] = useState(() => localStorage.getItem('liquidation_test_symbol') || 'BTCUSDT_PERP.A');
-    const [months, setMonths] = useState(() => Number(localStorage.getItem('liquidation_test_months')) || 12);
-    const [priceInterval, setPriceInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_interval')) || 0);
-    const [amountMin, setAmountMin] = useState<string>(() => localStorage.getItem('liquidation_test_amount_min') || '');
+    const [months, setMonths] = useState(() => Number(localStorage.getItem('liquidation_test_months')) || 36);
+    const [priceInterval, setPriceInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_interval')) || 20);
+    const [amountMin, setAmountMin] = useState<string>(() => localStorage.getItem('liquidation_test_amount_min') || '200');
     const [amountMax, setAmountMax] = useState<string>(() => localStorage.getItem('liquidation_test_amount_max') || '');
     const [side, setSide] = useState<'all' | 'long' | 'short'>(() => (localStorage.getItem('liquidation_test_side') as 'all' | 'long' | 'short') || 'all');
-    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'none');
-    const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '');
-    const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '');
-    const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '');
-    const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '');
-    const [priceRefreshInterval, setPriceRefreshInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_refresh')) || 30);
+    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'combined');
+    const [ratioFilter, setRatioFilter] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter') || '-100');
+    const [ratioFilterMax, setRatioFilterMax] = useState<string>(() => localStorage.getItem('liquidation_test_ratio_filter_max') || '100');
+    const [priceRangeMin, setPriceRangeMin] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_min') || '55000');
+    const [priceRangeMax, setPriceRangeMax] = useState<string>(() => localStorage.getItem('liquidation_test_price_range_max') || '80000');
+    const [priceRefreshInterval, setPriceRefreshInterval] = useState(() => Number(localStorage.getItem('liquidation_test_price_refresh')) || 5);
     const [gridLineInterval, setGridLineInterval] = useState(() => Number(localStorage.getItem('liquidation_test_grid_line_interval')) || 1000);
     const [smartIntervalEnabled, setSmartIntervalEnabled] = useState(() => localStorage.getItem('liquidation_test_smart_interval_enabled') === 'true');
     const [fixedIntervalCount, setFixedIntervalCount] = useState(() => Number(localStorage.getItem('liquidation_test_fixed_interval_count')) || 50);
@@ -880,10 +880,7 @@ export function LiquidationTest() {
     };
 
     const formatCurrency = useCallback((value: number) => {
-        if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
-        if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
-        if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
-        return `$${value.toFixed(2)}`;
+        return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }, []);
 
     const aggregateByPriceInterval = (rawData: HistoricalLiquidation[], interval: number) => {
@@ -1358,428 +1355,6 @@ export function LiquidationTest() {
                 short_volume: totalShortVolume,
                 total_volume: totalVolume,
                 long_short_ratio: ratio
-            };
-        });
-
-        // Filter out empty buckets and return
-        return aggregated
-            .filter(bucket => bucket.total_volume > 0 || buckets.length <= 100)
-            .sort((a, b) => a.price - b.price);
-    };
-
-    // Calculate a "smart" interval based on price range and desired cluster density
-    const calculateSmartInterval = (rawData: HistoricalLiquidation[], density: number): number => {
-        if (!rawData || rawData.length === 0) return 1000;
-
-        // Find min and max prices in the data
-        const prices = rawData.map(item => item.price).filter(p => p > 0);
-        if (prices.length === 0) return 1000;
-
-        const minPrice = Math.min(...prices);
-        const maxPrice = Math.max(...prices);
-        const priceRange = maxPrice - minPrice;
-
-        if (priceRange <= 0) return 1000;
-
-        // Map density (1-100) to target cluster count (5-200)
-        // density 1 = 5 clusters (fewer, larger intervals)
-        // density 100 = 200 clusters (more, smaller intervals)
-        const minClusters = 5;
-        const maxClusters = 200;
-        const targetClusterCount = minClusters + ((density - 1) / 99) * (maxClusters - minClusters);
-
-        // Calculate raw interval
-        const rawInterval = priceRange / targetClusterCount;
-
-        // Round to a "nice" number
-        const niceNumbers = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000];
-
-        // Find the closest nice number
-        let bestInterval = niceNumbers[0];
-        let minDiff = Math.abs(rawInterval - niceNumbers[0]);
-
-        for (const nice of niceNumbers) {
-            const diff = Math.abs(rawInterval - nice);
-            if (diff < minDiff) {
-                minDiff = diff;
-                bestInterval = nice;
-            }
-        }
-
-        // If the raw interval is larger than the largest nice number, round to nearest 10000
-        if (rawInterval > niceNumbers[niceNumbers.length - 1]) {
-            bestInterval = Math.ceil(rawInterval / 10000) * 10000;
-        }
-
-        return bestInterval;
-    };
-
-    /**
-     * Adaptive/Dynamic Interval Clustering Algorithm
-     *
-     * Creates variable-sized buckets based on data density:
-     * - High density areas (many liquidations close together) → smaller intervals (more detail)
-     * - Low density areas (few/sparse liquidations) → larger intervals (less noise)
-     *
-     * Algorithm steps:
-     * 1. Sort data by price
-     * 2. Calculate local density using sliding window
-     * 3. Detect peaks (high concentration areas)
-     * 4. Create variable-sized buckets around peaks with smaller intervals
-     * 5. Merge sparse areas into larger buckets
-     *
-     * @param rawData - Array of liquidation data
-     * @param density - Density sensitivity (1-100), higher = more granular splitting
-     * @param userMinInterval - Optional minimum allowed interval size (default: 1)
-     * @param userMaxInterval - Optional maximum allowed interval size (default: 10000)
-     * @returns Aggregated data with adaptive intervals
-     */
-    const aggregateByAdaptiveInterval = (
-        rawData: HistoricalLiquidation[],
-        density: number,
-        userMinInterval?: number,
-        userMaxInterval?: number
-    ): HistoricalLiquidation[] => {
-        // 1. Apply side filter first
-        const sideAffectedData = rawData.map(item => {
-            const long = side === 'short' ? 0 : item.long_volume;
-            const short = side === 'long' ? 0 : item.short_volume;
-            return {
-                ...item,
-                long_volume: long,
-                short_volume: short,
-                total_volume: long + short,
-                long_short_ratio: long / (short || 1)
-            };
-        });
-
-        let filtered = sideAffectedData;
-        if (side !== 'all') {
-            filtered = sideAffectedData.filter(item => item.total_volume > 0);
-        }
-
-        if (filtered.length === 0) return [];
-
-        // 2. Sort by price
-        const sortedData = [...filtered].sort((a, b) => a.price - b.price);
-
-        const prices = sortedData.map(d => d.price);
-        const minPrice = Math.min(...prices);
-        const maxPrice = Math.max(...prices);
-        const priceRange = maxPrice - minPrice;
-
-        if (priceRange <= 0) return sortedData;
-
-        // 3. Calculate density sensitivity parameters based on the slider (1-100)
-        // density 1 = low sensitivity (fewer, larger clusters)
-        // density 100 = high sensitivity (more, smaller clusters in dense areas)
-        const densityFactor = density / 50; // 0.02 to 2.0 (normalized for 1-100 range)
-
-        // Base interval calculation - target number of clusters scales with density
-        const minClusters = Math.max(5, Math.floor(10 * densityFactor));
-        const maxClusters = Math.max(20, Math.floor(100 * densityFactor));
-        const targetBaseInterval = priceRange / ((minClusters + maxClusters) / 2);
-
-        // 4. Calculate local density using sliding window with improved algorithm
-        // Density is measured by total volume within a window relative to the window size
-        // Higher density = more liquidations per price unit = needs smaller intervals
-        const windowSize = Math.max(3, Math.floor(sortedData.length / (20 * densityFactor)));
-        const densityScores: number[] = [];
-
-        // Calculate total volume for relative density comparison
-        const totalVolume = sortedData.reduce((sum, d) => sum + d.total_volume, 0);
-        const avgVolumePerItem = totalVolume / sortedData.length;
-
-        for (let i = 0; i < sortedData.length; i++) {
-            const windowStart = Math.max(0, i - Math.floor(windowSize / 2));
-            const windowEnd = Math.min(sortedData.length, i + Math.floor(windowSize / 2) + 1);
-            const windowData = sortedData.slice(windowStart, windowEnd);
-
-            const windowVolume = windowData.reduce((sum, d) => sum + d.total_volume, 0);
-            const windowPriceRange = windowData[windowData.length - 1]?.price - windowData[0]?.price || 1;
-
-            // Density score: volume per unit of price range, normalized by average
-            // This gives a relative measure: >1 means denser than average, <1 means sparser
-            const rawDensity = (windowVolume / windowData.length) / Math.max(windowPriceRange, targetBaseInterval / 10);
-            const normalizedByAvg = rawDensity / (avgVolumePerItem || 1);
-            densityScores.push(normalizedByAvg);
-        }
-
-        // Normalize density scores to 0-1 range for interval calculation
-        const maxDensity = Math.max(...densityScores, 0.001); // Avoid division by zero
-        const minDensity = Math.min(...densityScores);
-        const densityRange = maxDensity - minDensity || 1;
-
-        // Normalize to 0-1 scale, but preserve relative differences
-        const normalizedDensities = densityScores.map(d => (d - minDensity) / densityRange);
-
-        // 5. Detect peaks (local maxima in density)
-        const peaks: number[] = [];
-        const peakWindow = Math.max(2, Math.floor(windowSize / 2));
-
-        for (let i = peakWindow; i < sortedData.length - peakWindow; i++) {
-            const localSlice = normalizedDensities.slice(i - peakWindow, i + peakWindow + 1);
-            const localMax = Math.max(...localSlice);
-
-            // It's a peak if it's the local max and above threshold
-            if (normalizedDensities[i] === localMax && normalizedDensities[i] > 0.3) {
-                peaks.push(i);
-            }
-        }
-
-        // 6. Create adaptive buckets
-        const buckets: {
-            priceStart: number;
-            priceEnd: number;
-            items: HistoricalLiquidation[];
-            targetInterval: number;
-        }[] = [];
-
-        // Define interval sizes based on local density
-        // Dense areas (near peaks): smaller intervals
-        // Sparse areas: larger intervals
-        const calculatedMinInterval = targetBaseInterval / (2 * densityFactor);
-        const calculatedMaxInterval = targetBaseInterval * (2 / densityFactor);
-
-        // Apply user-defined bounds if provided
-        const absoluteMinInterval = userMinInterval !== undefined ? userMinInterval : 1;
-        const absoluteMaxInterval = userMaxInterval !== undefined ? userMaxInterval : 10000;
-
-        // Clamp the calculated intervals to respect user bounds
-        const minInterval = Math.max(calculatedMinInterval, absoluteMinInterval);
-        const maxInterval = Math.min(calculatedMaxInterval, absoluteMaxInterval);
-
-        // Debug logging to verify inverse relationship
-        const debugInfo: { price: number; density: number; interval: number }[] = [];
-
-        let currentBucketStart = 0;
-
-        while (currentBucketStart < sortedData.length) {
-            const currentPrice = sortedData[currentBucketStart].price;
-            const currentDensity = normalizedDensities[currentBucketStart];
-
-            // Calculate adaptive interval using INVERSE relationship to density
-            // Formula: interval = maxInterval / (1 + density * sensitivity)
-            // This ensures:
-            // - When density is 2x higher → interval is ~2x smaller
-            // - When density → 0, interval → maxInterval
-            // - When density → 1, interval → maxInterval / (1 + sensitivity)
-            const sensitivity = 3.0; // Controls strength of inverse relationship
-            const densityMultiplier = 1 + (currentDensity * sensitivity);
-            let adaptiveInterval = maxInterval / densityMultiplier;
-
-            // Clamp to ensure we respect bounds
-            adaptiveInterval = Math.max(minInterval, Math.min(maxInterval, adaptiveInterval));
-
-            // Debug: Log first few iterations to verify inverse relationship
-            if (debugInfo.length < 10) {
-                debugInfo.push({
-                    price: currentPrice,
-                    density: Math.round(currentDensity * 100) / 100,
-                    interval: Math.round(adaptiveInterval)
-                });
-            }
-
-            // Find the end of this bucket
-            let bucketEnd = currentBucketStart;
-            const priceStart = sortedData[currentBucketStart].price;
-            let priceEnd = priceStart + adaptiveInterval;
-
-            // Expand bucket to include all items within the price range
-            while (bucketEnd < sortedData.length && sortedData[bucketEnd].price < priceEnd) {
-                bucketEnd++;
-            }
-
-            // Ensure minimum number of items per bucket (avoid too many tiny buckets)
-            const minItemsPerBucket = Math.max(1, Math.floor(3 / densityFactor));
-            if (bucketEnd - currentBucketStart < minItemsPerBucket && bucketEnd < sortedData.length) {
-                bucketEnd = Math.min(currentBucketStart + minItemsPerBucket, sortedData.length);
-                priceEnd = sortedData[bucketEnd - 1].price;
-            }
-
-            // Create bucket
-            const bucketItems = sortedData.slice(currentBucketStart, bucketEnd);
-            if (bucketItems.length > 0) {
-                buckets.push({
-                    priceStart: priceStart,
-                    priceEnd: priceEnd,
-                    items: bucketItems,
-                    targetInterval: adaptiveInterval
-                });
-            }
-
-            currentBucketStart = bucketEnd;
-        }
-
-        // 7. Merge very small adjacent buckets in sparse areas (optional optimization)
-        const mergedBuckets: typeof buckets = [];
-        let i = 0;
-
-        while (i < buckets.length) {
-            const current = buckets[i];
-            let merged = { ...current };
-
-            // Try to merge with next bucket if both are in low-density areas
-            while (i + 1 < buckets.length) {
-                const next = buckets[i + 1];
-                const avgDensity = (normalizedDensities[currentBucketStart] || 0);
-
-                // Merge if both buckets are small and in sparse area
-                const isSparseArea = avgDensity < 0.3;
-                const isSmallBucket = merged.items.length < 3 && next.items.length < 3;
-                const combinedSize = merged.items.length + next.items.length;
-                const wouldBeReasonableSize = combinedSize <= Math.max(10, 15 / densityFactor);
-
-                if (isSparseArea && isSmallBucket && wouldBeReasonableSize) {
-                    merged = {
-                        priceStart: merged.priceStart,
-                        priceEnd: next.priceEnd,
-                        items: [...merged.items, ...next.items],
-                        targetInterval: merged.targetInterval + next.targetInterval
-                    };
-                    i++;
-                } else {
-                    break;
-                }
-            }
-
-            mergedBuckets.push(merged);
-            i++;
-        }
-
-        // 8. Aggregate data within each bucket
-        const aggregated: HistoricalLiquidation[] = mergedBuckets.map(bucket => {
-            const items = bucket.items;
-            const totalLongVolume = items.reduce((sum, item) => sum + item.long_volume, 0);
-            const totalShortVolume = items.reduce((sum, item) => sum + item.short_volume, 0);
-            const totalVolume = totalLongVolume + totalShortVolume;
-
-            // Calculate weighted average price
-            const weightedPriceSum = items.reduce((sum, item) =>
-                sum + item.price * item.total_volume, 0);
-            const avgPrice = totalVolume > 0 ? weightedPriceSum / totalVolume :
-                (bucket.priceStart + bucket.priceEnd) / 2;
-
-            return {
-                timestamp: bucket.priceStart, // Use price start as timestamp for range identification
-                price: avgPrice,
-                long_volume: totalLongVolume,
-                short_volume: totalShortVolume,
-                total_volume: totalVolume,
-                long_short_ratio: totalLongVolume / (totalShortVolume || 1)
-            };
-        });
-
-        // Debug: Log the inverse density-interval relationship
-        if (debugInfo.length > 0) {
-            console.log('=== Adaptive Interval Algorithm Debug ===');
-            console.log(`Min Interval: ${minInterval}, Max Interval: ${maxInterval}, Sensitivity: 3.0`);
-            console.log('Price | Density | Interval (inverse relationship)');
-            console.log('------|---------|----------');
-            debugInfo.forEach(info => {
-                console.log(`${info.price.toFixed(0).padStart(5)} | ${info.density.toFixed(2).padStart(7)} | ${info.interval}`);
-            });
-            console.log('=== End Debug ===');
-        }
-
-        return aggregated.sort((a, b) => a.price - b.price);
-    };
-
-    /**
-     * Fixed Count Interval Clustering Algorithm
-     *
-     * Creates exactly N buckets of uniform size across the price range:
-     * - Calculates interval size as (maxPrice - minPrice) / targetCount
-     * - Creates exactly targetCount buckets of equal size
-     * - Aggregates data within each bucket
-     *
-     * @param rawData - Array of liquidation data
-     * @param targetCount - Exact number of intervals/buckets to create (e.g., 77)
-     * @returns Aggregated data with exactly targetCount items
-     */
-    const aggregateByFixedCount = (
-        rawData: HistoricalLiquidation[],
-        targetCount: number
-    ): HistoricalLiquidation[] => {
-        // Validate target count
-        const validTargetCount = Math.max(1, Math.min(500, targetCount));
-
-        // 1. Apply side filter first
-        const sideAffectedData = rawData.map(item => {
-            const long = side === 'short' ? 0 : item.long_volume;
-            const short = side === 'long' ? 0 : item.short_volume;
-            return {
-                ...item,
-                long_volume: long,
-                short_volume: short,
-                total_volume: long + short,
-                long_short_ratio: long / (short || 1)
-            };
-        });
-
-        let filtered = sideAffectedData;
-        if (side !== 'all') {
-            filtered = sideAffectedData.filter(item => item.total_volume > 0);
-        }
-
-        if (filtered.length === 0) return [];
-
-        // 2. Sort by price
-        const sortedData = [...filtered].sort((a, b) => a.price - b.price);
-
-        const prices = sortedData.map(d => d.price);
-        const minPrice = Math.min(...prices);
-        const maxPrice = Math.max(...prices);
-        const priceRange = maxPrice - minPrice;
-
-        if (priceRange <= 0) return sortedData;
-
-        // 3. Calculate uniform interval size
-        const intervalSize = priceRange / validTargetCount;
-
-        // 4. Create exactly targetCount buckets
-        const buckets: {
-            priceStart: number;
-            priceEnd: number;
-            items: HistoricalLiquidation[];
-        }[] = [];
-
-        for (let i = 0; i < validTargetCount; i++) {
-            const priceStart = minPrice + (i * intervalSize);
-            const priceEnd = minPrice + ((i + 1) * intervalSize);
-
-            // Find items within this bucket's price range
-            const bucketItems = sortedData.filter(item =>
-                item.price >= priceStart && (i === validTargetCount - 1 ? item.price <= priceEnd : item.price < priceEnd)
-            );
-
-            buckets.push({
-                priceStart,
-                priceEnd,
-                items: bucketItems
-            });
-        }
-
-        // 5. Aggregate data within each bucket
-        const aggregated: HistoricalLiquidation[] = buckets.map(bucket => {
-            const items = bucket.items;
-            const totalLongVolume = items.reduce((sum, item) => sum + item.long_volume, 0);
-            const totalShortVolume = items.reduce((sum, item) => sum + item.short_volume, 0);
-            const totalVolume = totalLongVolume + totalShortVolume;
-
-            // Calculate weighted average price
-            const weightedPriceSum = items.reduce((sum, item) =>
-                sum + item.price * item.total_volume, 0);
-            const avgPrice = totalVolume > 0 ? weightedPriceSum / totalVolume :
-                (bucket.priceStart + bucket.priceEnd) / 2;
-
-            return {
-                timestamp: bucket.priceStart, // Use price start as timestamp for range identification
-                price: avgPrice,
-                long_volume: totalLongVolume,
-                short_volume: totalShortVolume,
-                total_volume: totalVolume,
-                long_short_ratio: totalLongVolume / (totalShortVolume || 1)
             };
         });
 
@@ -3108,15 +2683,21 @@ export function LiquidationTest() {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-border">
-                                        {processedData.slice().reverse().slice(0, 50).map((item, idx) => (
+                                        {[...processedData].sort((a, b) => b.price - a.price).slice(0, 100).map((item, idx) => (
                                             <tr key={idx} className="hover:bg-muted/50 transition-colors">
-                                                <td className="px-6 py-4 text-sm">
-                                                    {priceInterval > 0 ? `Faixa ${formatCurrency(item.timestamp)}` : format(new Date(item.timestamp * 1000), 'dd/MM/yyyy')}
+                                                <td className="px-6 py-4 text-sm font-medium">
+                                                    {smartIntervalEnabled || useFixedIntervalCount || priceInterval > 0
+                                                        ? `Faixa $${item.price.toLocaleString()}`
+                                                        : format(new Date(item.timestamp * 1000), 'dd/MM/yyyy HH:mm')}
                                                 </td>
                                                 <td className="px-6 py-4 text-sm text-green-500 font-medium">{formatCurrency(item.long_volume)}</td>
                                                 <td className="px-6 py-4 text-sm text-red-500 font-medium">{formatCurrency(item.short_volume)}</td>
                                                 <td className="px-6 py-4 text-sm font-semibold">{formatCurrency(item.total_volume)}</td>
-                                                <td className="px-6 py-4 text-sm">{item.long_short_ratio.toFixed(2)}</td>
+                                                <td className="px-6 py-4 text-sm">
+                                                    <span className={item.long_short_ratio > 1 ? 'text-green-500' : item.long_short_ratio < -1 ? 'text-red-500' : ''}>
+                                                        {item.long_short_ratio.toFixed(2)}
+                                                    </span>
+                                                </td>
                                                 <td className="px-6 py-4 text-sm text-muted-foreground">{formatCurrency(item.price)}</td>
                                             </tr>
                                         ))}
