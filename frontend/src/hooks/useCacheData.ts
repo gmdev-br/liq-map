@@ -39,7 +39,12 @@ export function useCacheData<T>({
     const [isFromCache, setIsFromCache] = useState(false);
 
     const fetchData = useCallback(async (forceRefresh = false) => {
-        if (!enabled) return;
+        console.log(`[useCacheData] fetchData called - enabled: ${enabled}, forceRefresh: ${forceRefresh}, cacheKey: ${cacheKey}`);
+        
+        if (!enabled && !forceRefresh) {
+            console.log(`[useCacheData] Skipping fetch - enabled is false and not forced`);
+            return;
+        }
 
         setIsLoading(true);
         setError(null);
@@ -75,9 +80,11 @@ export function useCacheData<T>({
             onSuccess?.(freshData);
         } catch (err) {
             const errorObj = err instanceof Error ? err : new Error(String(err));
+            console.error(`[useCacheData] Fetch error for ${cacheKey}:`, errorObj);
             setError(errorObj);
             onError?.(errorObj);
         } finally {
+            console.log(`[useCacheData] Fetch completed for ${cacheKey}`);
             setIsLoading(false);
         }
     }, [cacheKey, fetchFn, ttlMinutes, enabled, onSuccess, onError]);

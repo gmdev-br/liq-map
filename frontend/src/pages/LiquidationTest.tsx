@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { useCacheData } from '@/hooks/useCacheData';
+import { dbCache } from '@/utils/db';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { format } from 'date-fns';
 import { liquidationsApi, pricesApi } from '@/services/api';
@@ -112,6 +113,7 @@ const LiquidationChart = memo(function LiquidationChart({
     const containerRef = useRef<HTMLDivElement>(null);
     const [clickedIndex, setClickedIndex] = useState<number | null>(null);
     const [tooltipPos, setTooltipPos] = useState<{ x: number, y: number } | null>(null);
+    const [isInteracting, setIsInteracting] = useState(false);
 
     // Zoom/Pan persistence keys per symbol
     const zoomKeys = useMemo(() => ({
@@ -185,17 +187,37 @@ const LiquidationChart = memo(function LiquidationChart({
     const option: EChartsOption = useMemo(() => {
         const markLines: any[] = [];
 
+        // Helper function to find the closest label index for category axis
+        const findClosestLabelIndex = (target: number): number => {
+            if (labels.length === 0) return 0;
+            let closestIdx = 0;
+            let minDiff = Math.abs(labels[0] - target);
+            for (let i = 1; i < labels.length; i++) {
+                const diff = Math.abs(labels[i] - target);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestIdx = i;
+                }
+            }
+            return closestIdx;
+        };
+
+        // Ensure minimum grid line interval to avoid infinite loops or no lines
+        const effectiveGridInterval = Math.max(gridLineInterval, 100);
+
         // Grid Lines
-        if (gridLineInterval > 0 && sortedData.length > 0) {
+        if (effectiveGridInterval > 0 && sortedData.length > 0) {
             const minP = sortedData[0].price;
             const maxP = sortedData[sortedData.length - 1].price;
-            const first = Math.ceil(minP / gridLineInterval) * gridLineInterval;
-            const last = Math.floor(maxP / gridLineInterval) * gridLineInterval;
+            const first = Math.ceil(minP / effectiveGridInterval) * effectiveGridInterval;
+            const last = Math.floor(maxP / effectiveGridInterval) * effectiveGridInterval;
 
-            for (let m = first; m <= last; m += gridLineInterval) {
+            for (let m = first; m <= last; m += effectiveGridInterval) {
+                // Use category index instead of string value for reliable positioning
+                const idx = findClosestLabelIndex(m);
                 markLines.push({
-                    xAxis: horizontal ? undefined : String(m),
-                    yAxis: horizontal ? String(m) : undefined,
+                    xAxis: horizontal ? undefined : idx,
+                    yAxis: horizontal ? idx : undefined,
                     lineStyle: {
                         color: lineStyles.thousandLines.color,
                         width: lineStyles.thousandLines.width,
@@ -207,11 +229,17 @@ const LiquidationChart = memo(function LiquidationChart({
             }
         }
 
-        // Current Price Line
-        if (currentPrice !== null) {
+        // Current Price Line with fallback to middle price if API fails
+        const effectiveCurrentPrice = currentPrice ?? (sortedData.length > 0
+            ? (sortedData[0].price + sortedData[sortedData.length - 1].price) / 2
+            : null);
+
+        if (effectiveCurrentPrice !== null) {
+            // Use category index instead of string value for reliable positioning
+            const idx = findClosestLabelIndex(effectiveCurrentPrice);
             markLines.push({
-                xAxis: horizontal ? undefined : String(currentPrice),
-                yAxis: horizontal ? String(currentPrice) : undefined,
+                xAxis: horizontal ? undefined : idx,
+                yAxis: horizontal ? idx : undefined,
                 lineStyle: {
                     color: lineStyles.btcQuoteLine.color,
                     width: lineStyles.btcQuoteLine.width,
@@ -228,9 +256,10 @@ const LiquidationChart = memo(function LiquidationChart({
             const { mean, regions } = stdDevData;
 
             if (showMeanLine) {
+                const meanIdx = findClosestLabelIndex(mean);
                 markLines.push({
-                    xAxis: horizontal ? undefined : String(mean),
-                    yAxis: horizontal ? String(mean) : undefined,
+                    xAxis: horizontal ? undefined : meanIdx,
+                    yAxis: horizontal ? meanIdx : undefined,
                     lineStyle: { color: '#8b5cf6', width: 2, type: 'solid' },
                     label: { show: false },
                     tooltip: { show: false }
@@ -239,19 +268,21 @@ const LiquidationChart = memo(function LiquidationChart({
 
             const addSD = (pMin: number, pMax: number, color: string, opacity: number = 0.05) => {
                 if (pMin > 0 && pMax > 0) {
-                    // Lines
-                    markLines.push({ xAxis: horizontal ? undefined : String(pMin), yAxis: horizontal ? String(pMin) : undefined, lineStyle: { color, width: 1.5, type: 'dashed' }, label: { show: false }, tooltip: { show: false } });
-                    markLines.push({ xAxis: horizontal ? undefined : String(pMax), yAxis: horizontal ? String(pMax) : undefined, lineStyle: { color, width: 1.5, type: 'dashed' }, label: { show: false }, tooltip: { show: false } });
+                    // Lines - use category index instead of string value
+                    const pMinIdx = findClosestLabelIndex(pMin);
+                    const pMaxIdx = findClosestLabelIndex(pMax);
+                    markLines.push({ xAxis: horizontal ? undefined : pMinIdx, yAxis: horizontal ? pMinIdx : undefined, lineStyle: { color, width: 1.5, type: 'dashed' }, label: { show: false }, tooltip: { show: false } });
+                    markLines.push({ xAxis: horizontal ? undefined : pMaxIdx, yAxis: horizontal ? pMaxIdx : undefined, lineStyle: { color, width: 1.5, type: 'dashed' }, label: { show: false }, tooltip: { show: false } });
 
-                    // Areas
+                    // Areas - use category index instead of string value
                     markAreas.push([{
                         name: 'SD Zone',
-                        xAxis: horizontal ? undefined : String(pMin),
-                        yAxis: horizontal ? String(pMin) : undefined,
+                        xAxis: horizontal ? undefined : pMinIdx,
+                        yAxis: horizontal ? pMinIdx : undefined,
                         itemStyle: { color, opacity }
                     }, {
-                        xAxis: horizontal ? undefined : String(pMax),
-                        yAxis: horizontal ? String(pMax) : undefined,
+                        xAxis: horizontal ? undefined : pMaxIdx,
+                        yAxis: horizontal ? pMaxIdx : undefined,
                     }]);
                 }
             };
@@ -268,7 +299,19 @@ const LiquidationChart = memo(function LiquidationChart({
                 name: 'Total Volume',
                 type: 'bar',
                 data: sortedData.map(d => d.long_volume + d.short_volume),
-                itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] },
+                barWidth: '40%',
+                barCategoryGap: '40%',
+                itemStyle: {
+                    color: '#3b82f6',
+                    borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0],
+                    borderWidth: 0
+                },
+                emphasis: {
+                    itemStyle: {
+                        shadowBlur: 4,
+                        shadowColor: 'rgba(59, 130, 246, 0.4)'
+                    }
+                },
                 markLine: markLines.length > 0 ? {
                     symbol: ['none', 'none'],
                     data: markLines,
@@ -280,7 +323,19 @@ const LiquidationChart = memo(function LiquidationChart({
                     name: 'Longs',
                     type: 'bar',
                     data: sortedData.map(d => d.long_volume),
-                    itemStyle: { color: '#10b981', borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] },
+                    barWidth: '40%',
+                    barGap: '10%',
+                    itemStyle: {
+                        color: '#10b981',
+                        borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0],
+                        borderWidth: 0
+                    },
+                    emphasis: {
+                        itemStyle: {
+                            shadowBlur: 4,
+                            shadowColor: 'rgba(16, 185, 129, 0.4)'
+                        }
+                    },
                     stack: groupBy === 'combined' ? 'total' : undefined,
                     markLine: markLines.length > 0 ? {
                         symbol: ['none', 'none'],
@@ -298,24 +353,82 @@ const LiquidationChart = memo(function LiquidationChart({
                     name: 'Shorts',
                     type: 'bar',
                     data: sortedData.map(d => d.short_volume),
-                    itemStyle: { color: '#ef4444', borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] },
-                    stack: groupBy === 'combined' ? 'total' : undefined
+                    barWidth: '40%',
+                    barGap: '10%',
+                    itemStyle: {
+                        color: '#ef4444',
+                        borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0],
+                        borderWidth: 0
+                    },
+                    emphasis: {
+                        itemStyle: {
+                            shadowBlur: 4,
+                            shadowColor: 'rgba(239, 68, 68, 0.4)'
+                        }
+                    },
+                    stack: groupBy === 'combined' ? 'total' : undefined,
+                    markLine: markLines.length > 0 ? {
+                        symbol: ['none', 'none'],
+                        data: markLines,
+                        silent: true,
+                        animation: false
+                    } : undefined,
+                    markArea: markAreas.length > 0 ? {
+                        silent: true,
+                        data: markAreas,
+                        animation: false
+                    } : undefined
                 }
             ];
 
         const savedStart = localStorage.getItem(zoomKeys.start);
         const savedEnd = localStorage.getItem(zoomKeys.end);
 
+        // Create a lookup for price -> volume data
+        const priceDataMap = new Map(
+            sortedData
+                .filter(d => d.long_volume + d.short_volume > 0)
+                .map(d => [String(d.price), d])
+        );
+
         const categoryAxis = {
             type: 'category' as const,
             data: labels.map(String),
-            inverse: !horizontal, // Invert Y when vertical (price on X is rare but follows same logic)
+            inverse: !horizontal,
             axisLabel: {
-                color: '#64748b',
-                formatter: (val: string) => formatCurrency(Number(val))
+                fontSize: 10,
+                fontWeight: 500,
+                interval: 0,
+                formatter: (val: string) => {
+                    const data = priceDataMap.get(val);
+                    if (!data) return '';
+                    
+                    // Determine color based on predominance
+                    const isLongPredominant = data.long_volume > data.short_volume;
+                    const color = isLongPredominant ? '#10b981' : '#ef4444';
+                    
+                    // Return rich text with color
+                    return `{${isLongPredominant ? 'long' : 'short'}|${formatCurrency(Number(val))}}`;
+                },
+                rich: {
+                    long: {
+                        color: '#10b981',
+                        fontSize: 10,
+                        fontWeight: 600
+                    },
+                    short: {
+                        color: '#ef4444',
+                        fontSize: 10,
+                        fontWeight: 600
+                    }
+                }
             },
-            axisLine: { show: false },
-            axisTick: { show: false },
+            axisLine: { show: true, lineStyle: { color: 'rgba(100, 116, 139, 0.2)' } },
+            axisTick: {
+                show: true,
+                lineStyle: { color: 'rgba(100, 116, 139, 0.2)' },
+                interval: (index: number) => priceDataMap.has(String(labels[index]))
+            },
             splitLine: { show: false }
         };
 
@@ -324,10 +437,20 @@ const LiquidationChart = memo(function LiquidationChart({
             min: 0,
             max: yMax,
             axisLabel: {
-                color: '#64748b',
+                color: '#94a3b8',
+                fontSize: 11,
+                fontWeight: 500,
                 formatter: (val: number) => formatCurrency(val)
             },
-            splitLine: { show: false }
+            axisLine: { show: true, lineStyle: { color: 'rgba(100, 116, 139, 0.2)' } },
+            axisTick: { show: true, lineStyle: { color: 'rgba(100, 116, 139, 0.2)' } },
+            splitLine: {
+                show: true,
+                lineStyle: {
+                    color: 'rgba(100, 116, 139, 0.1)',
+                    type: 'dashed'
+                }
+            }
         };
 
         return {
@@ -335,10 +458,11 @@ const LiquidationChart = memo(function LiquidationChart({
                 top: 40,
                 right: 20,
                 bottom: 20,
-                left: 60,
+                left: horizontal ? 90 : 60,
                 containLabel: true
             },
             tooltip: {
+                show: !isInteracting,
                 trigger: 'axis',
                 axisPointer: {
                     type: 'cross',
@@ -510,10 +634,13 @@ const LiquidationChart = memo(function LiquidationChart({
             ],
             series
         };
-    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval]);
+    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval, isInteracting]);
 
     const onEvents = useMemo(() => ({
         datazoom: (params: any) => {
+            // Mark interaction as complete when datazoom finishes
+            setTimeout(() => setIsInteracting(false), 100);
+            
             if (chartRef.current) {
                 const chart = chartRef.current.getEchartsInstance();
                 const option = chart.getOption() as any;
@@ -522,6 +649,14 @@ const LiquidationChart = memo(function LiquidationChart({
                 localStorage.setItem(zoomKeys.start, start.toString());
                 localStorage.setItem(zoomKeys.end, end.toString());
             }
+        },
+        mousedown: () => {
+            // User started interacting (potential pan/zoom)
+            setIsInteracting(true);
+        },
+        mouseup: () => {
+            // User finished interacting
+            setIsInteracting(false);
         },
         click: (params: any) => {
             // Check if we clicked on a bar (Longs, Shorts, or Total Volume)
@@ -793,6 +928,11 @@ export function LiquidationTest() {
     const [currentPrice, setCurrentPrice] = useState<number | null>(null);
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
     const isFetchingPriceRef = useRef(false);
+
+    // Estado para controlar fetch manual vs cache
+    const [shouldFetchNewData, setShouldFetchNewData] = useState(false);
+    const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
+    const [cacheStatus, setCacheStatus] = useState<'idle' | 'loading_cache' | 'loaded_from_cache' | 'fetching_api' | 'loaded_from_api'>('idle');
 
     // Persist line styles to localStorage
     useEffect(() => {
@@ -1133,7 +1273,7 @@ export function LiquidationTest() {
         return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }, []);
 
-    const aggregateByPriceInterval = (rawData: HistoricalLiquidation[], interval: number) => {
+    const aggregateByPriceInterval = useCallback((rawData: HistoricalLiquidation[], interval: number) => {
         // 1. First, map the data to respect the side filter (zeroing out the other side)
         const sideAffectedData = rawData.map(item => {
             const long = side === 'short' ? 0 : item.long_volume;
@@ -1245,7 +1385,7 @@ export function LiquidationTest() {
                 symbolVolumes: item.symbolVolumes
             };
         }).sort((a, b) => a.price - b.price);
-    };
+    }, [side]);
 
     /**
      * Adaptive/Dynamic Interval Clustering Algorithm
@@ -1267,7 +1407,7 @@ export function LiquidationTest() {
      * @param userMaxInterval - Optional maximum allowed interval size (default: 10000)
      * @returns Aggregated data with adaptive intervals
      */
-    const aggregateByAdaptiveInterval = (
+    const aggregateByAdaptiveInterval = useCallback((
         rawData: HistoricalLiquidation[],
         density: number,
         userMinInterval?: number,
@@ -1539,7 +1679,7 @@ export function LiquidationTest() {
         }
 
         return aggregated.sort((a, b) => a.price - b.price);
-    };
+    }, [side]);
 
     /**
      * Fixed Count Interval Clustering Algorithm
@@ -1553,7 +1693,7 @@ export function LiquidationTest() {
      * @param targetCount - Exact number of intervals/buckets to create (e.g., 77)
      * @returns Aggregated data with exactly targetCount items
      */
-    const aggregateByFixedCount = (
+    const aggregateByFixedCount = useCallback((
         rawData: HistoricalLiquidation[],
         targetCount: number
     ): HistoricalLiquidation[] => {
@@ -1669,7 +1809,7 @@ export function LiquidationTest() {
         return aggregated
             .filter(bucket => bucket.total_volume > 0 || buckets.length <= 100)
             .sort((a, b) => a.price - b.price);
-    };
+    }, [side]);
 
     // Calculate a "smart" interval based on price range and desired cluster density
     const calculateSmartInterval = (rawData: HistoricalLiquidation[], density: number): number => {
@@ -1850,11 +1990,12 @@ export function LiquidationTest() {
         ? `liquidation_multi_v2_${[...selectedSymbols].sort().join('-')}_${months}`
         : `liquidation_v2_${symbol}_${months}`;
 
+    // Hook de cache - desabilitado para evitar fetch automático
     const { isLoading, refetch, isFromCache, clearCache } = useCacheData({
         cacheKey: cacheKeyBase,
         fetchFn: fetchLiquidationData,
         ttlMinutes: 30,
-        enabled: true,
+        enabled: false, // Desabilitado - só fetch quando explicitamente solicitado
         onSuccess: async (result) => {
             const data = result as any;
             if (!data) return;
@@ -1894,9 +2035,6 @@ export function LiquidationTest() {
                     basePrice = itemPrice;
                 }
 
-                // In multi-asset mode, the formula P_alt * (P_btc / P_alt) simplifies to P_btc.
-                // Thus we simply assign the basePrice (which is the BTC price) to the liquidation.
-                // In single-asset mode, basePrice is simply the asset's own historical price.
                 return basePrice;
             };
 
@@ -1946,12 +2084,12 @@ export function LiquidationTest() {
             }
 
             setLastFetchTime(Date.now());
+            setCacheStatus('loaded_from_api');
             setStatus({
-                message: isFromCache
-                    ? `Dados carregados do cache (${allMapped.length} registros).`
-                    : `Dados carregados (${allMapped.length} registros).`,
+                message: `Dados atualizados da API (${allMapped.length} registros).`,
                 type: 'success'
             });
+            setShouldFetchNewData(false);
         },
         onError: (error) => {
             console.error('Fetch error:', error);
@@ -1970,8 +2108,143 @@ export function LiquidationTest() {
             }
 
             setStatus({ message: enhancedMessage, type: 'error' });
+            setShouldFetchNewData(false);
         }
     });
+
+    // Função para carregar dados do cache no mount
+    useEffect(() => {
+        const loadFromCache = async () => {
+            if (isInitialLoadComplete) return;
+
+            setCacheStatus('loading_cache');
+            setStatus({ message: 'Verificando cache local...', type: 'loading' });
+
+            try {
+                // Usar o dbCache para dados grandes
+                const cachedData = await dbCache.get<any>(cacheKeyBase);
+
+                if (cachedData) {
+                    console.log('[Cache] Dados encontrados no cache:', cacheKeyBase);
+
+                    const priceData = Array.isArray(cachedData.price) ? cachedData.price : [];
+                    const priceMap = new Map();
+                    const sortedPrices = [...priceData].sort((a: any, b: any) => Number(a.timestamp) - Number(b.timestamp));
+
+                    sortedPrices.forEach((p: any) => {
+                        const ts = Number(p.timestamp);
+                        const dateKey = new Date(ts * 1000).toISOString().split('T')[0];
+                        priceMap.set(dateKey, p.price);
+                    });
+
+                    const getNormalizedPrice = (timestamp: number, itemPrice: number) => {
+                        const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
+                        let basePrice = priceMap.get(dateKey);
+
+                        if (basePrice === undefined && sortedPrices.length > 0) {
+                            let nearest = sortedPrices[0];
+                            let minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
+                            for (const p of sortedPrices) {
+                                const diff = Math.abs(Number(p.timestamp) - timestamp);
+                                if (diff < minDiff) {
+                                    minDiff = diff;
+                                    nearest = p;
+                                } else if (diff > minDiff) {
+                                    break;
+                                }
+                            }
+                            if (minDiff <= 7 * 24 * 60 * 60) {
+                                basePrice = nearest.price;
+                            }
+                        }
+
+                        if (basePrice === undefined || basePrice === 0) {
+                            basePrice = itemPrice;
+                        }
+
+                        return basePrice;
+                    };
+
+                    const mapLiquidationItem = (item: any, symbolLabel?: string) => {
+                        const timestamp = Number(item.timestamp);
+                        const itemPrice = Number(item.price);
+                        const finalPrice = getNormalizedPrice(timestamp, itemPrice);
+
+                        const longVolume = item.long_volume !== undefined ? item.long_volume : (item.side === 'long' ? item.amount : 0);
+                        const shortVolume = item.short_volume !== undefined ? item.short_volume : (item.side === 'short' ? item.amount : 0);
+
+                        return {
+                            timestamp: timestamp,
+                            long_volume: longVolume,
+                            short_volume: shortVolume,
+                            total_volume: item.amount,
+                            long_short_ratio: longVolume >= shortVolume
+                                ? longVolume / Math.max(1, shortVolume)
+                                : -(shortVolume / Math.max(1, longVolume)),
+                            price: finalPrice,
+                            symbol: symbolLabel,
+                            original_price: itemPrice
+                        };
+                    };
+
+                    let allMapped: HistoricalLiquidation[] = [];
+
+                    if (cachedData.isMulti) {
+                        cachedData.liquidations.forEach((liqGroup: any) => {
+                            if (Array.isArray(liqGroup.data)) {
+                                allMapped = allMapped.concat(liqGroup.data.map((item: any) => mapLiquidationItem(item, liqGroup.symbol)));
+                            }
+                        });
+                    } else {
+                        if (Array.isArray(cachedData.liquidation)) {
+                            allMapped = cachedData.liquidation.map((item: any) => mapLiquidationItem(item, symbol));
+                        }
+                    }
+
+                    allMapped.sort((a, b) => a.timestamp - b.timestamp);
+
+                    setData(allMapped);
+
+                    if (priceData.length > 0) {
+                        setCurrentPrice(Number(priceData[priceData.length - 1].price || 0));
+                    }
+
+                    setLastFetchTime(Date.now());
+                    setCacheStatus('loaded_from_cache');
+                    setStatus({
+                        message: `Dados carregados do cache (${allMapped.length} registros). Clique em "Atualizar Dados" para buscar novos dados.`,
+                        type: 'success'
+                    });
+                } else {
+                    console.log('[Cache] Nenhum dado em cache, aguardando ação do usuário');
+                    setCacheStatus('idle');
+                    setStatus({
+                        message: 'Nenhum dado em cache. Clique em "Atualizar Dados" para buscar da API.',
+                        type: 'success'
+                    });
+                }
+            } catch (error) {
+                console.error('[Cache] Erro ao carregar do cache:', error);
+                setCacheStatus('idle');
+                setStatus({
+                    message: 'Erro ao carregar cache. Clique em "Atualizar Dados" para tentar da API.',
+                    type: 'error'
+                });
+            } finally {
+                setIsInitialLoadComplete(true);
+            }
+        };
+
+        loadFromCache();
+    }, [cacheKeyBase, symbol, isMultiAssetMode]);
+
+    // Handler para atualização manual
+    const handleUpdateData = useCallback(async () => {
+        setShouldFetchNewData(true);
+        setCacheStatus('fetching_api');
+        setStatus({ message: 'Buscando novos dados da API...', type: 'loading' });
+        await refetch(true);
+    }, [refetch]);
 
     // Helper to get adaptive interval statistics for display
     const getAdaptiveIntervalStats = (processedData: HistoricalLiquidation[]): { min: number; max: number; avg: number; count: number } => {
@@ -2108,7 +2381,7 @@ export function LiquidationTest() {
             // Use uniform interval aggregation
             setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
         }
-    }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax, smartIntervalEnabled, clusterDensity, minInterval, maxInterval, adaptiveScope, priceRangeMin, priceRangeMax, useFixedIntervalCount, fixedIntervalCount]);
+    }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax, smartIntervalEnabled, clusterDensity, minInterval, maxInterval, adaptiveScope, priceRangeMin, priceRangeMax, useFixedIntervalCount, fixedIntervalCount, aggregateByPriceInterval, aggregateByAdaptiveInterval, aggregateByFixedCount]);
 
     // Filter data for chart display based on groupBy selection and price range
     const chartData = useMemo(() => {
@@ -2175,22 +2448,25 @@ export function LiquidationTest() {
                 </div>
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={() => refetch(true)}
-                        disabled={isLoading}
+                        onClick={handleUpdateData}
+                        disabled={isLoading || cacheStatus === 'fetching_api'}
                         className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        title={cacheStatus === 'loaded_from_cache' ? 'Dados do cache - clique para atualizar da API' : 'Buscar dados da API'}
                     >
-                        {isLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                        Atualizar Dados
+                        {(isLoading || cacheStatus === 'fetching_api') ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        {cacheStatus === 'loaded_from_cache' ? 'Atualizar Dados (Cache)' : 'Atualizar Dados'}
                     </button>
-                    {isFromCache && (
-                        <button
-                            onClick={() => refetch(true)}
-                            disabled={isLoading}
-                            className="inline-flex items-center gap-2 rounded-md bg-secondary px-4 py-2 text-sm font-medium hover:bg-secondary/80 disabled:opacity-50"
-                        >
-                            <Clock className="h-4 w-4" />
-                            Forçar Refresh
-                        </button>
+                    {cacheStatus === 'loaded_from_cache' && (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-amber-600 bg-amber-100 rounded-md dark:text-amber-400 dark:bg-amber-900/30">
+                            <Clock className="h-3 w-3" />
+                            Cache
+                        </span>
+                    )}
+                    {cacheStatus === 'loaded_from_api' && (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-green-600 bg-green-100 rounded-md dark:text-green-400 dark:bg-green-900/30">
+                            <TrendingUp className="h-3 w-3" />
+                            Atualizado
+                        </span>
                     )}
                     <div className="w-px h-6 bg-border mx-1" />
                     <button
