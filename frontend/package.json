@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/query-sync-storage-persister": "^5.90.24",
     "@tanstack/react-query": "^5.17.0",
+    "@tanstack/react-query-persist-client": "^5.90.24",
     "axios": "^1.6.5",
     "chart.js": "^4.5.1",
     "chartjs-plugin-crosshair": "^2.0.0",

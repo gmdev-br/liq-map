@@ -1,5 +1,5 @@
 import { HashRouter, Routes, Route } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { Toaster } from 'sonner';
 import { Layout } from '@/components/Layout';
 import { Dashboard } from '@/pages/Dashboard';
@@ -7,19 +7,24 @@ import { LiquidationTest } from '@/pages/LiquidationTest';
 import { Exchanges } from '@/pages/Exchanges';
 import { Alerts } from '@/pages/Alerts';
 import { Settings } from '@/pages/Settings';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60 * 5, // 5 minutes
-      retry: 1,
-    },
-  },
-});
+import { queryClient, persister } from '@/store';
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{
+        persister,
+        maxAge: 1000 * 60 * 60 * 24, // 24 hours
+        dehydrateOptions: {
+          shouldDehydrateQuery: (query) => {
+            // Persist only liquidation-related queries
+            const queryKey = query.queryKey[0];
+            return queryKey === 'liquidations' || queryKey === 'liquidation-stats';
+          },
+        },
+      }}
+    >
       <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route path="/" element={<Layout />}>
@@ -41,7 +46,7 @@ function App() {
           },
         }}
       />
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   );
 }
 

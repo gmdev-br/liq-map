@@ -92,3 +92,26 @@ const applyTheme = () => {
 };
 
 applyTheme();
+
+// ============================================================
+// REACT QUERY PERSISTENCE CONFIGURATION
+// ============================================================
+import { QueryClient } from '@tanstack/react-query';
+import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
+
+// Create QueryClient with optimized defaults
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 5, // 5 minutes
+      retry: 1,
+      gcTime: 1000 * 60 * 60 * 24, // 24 hours (garbage collection time)
+    },
+  },
+});
+
+// Create persister using localStorage
+export const persister = createSyncStoragePersister({
+  storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+  key: 'coinglass-react-query-cache',
+});
