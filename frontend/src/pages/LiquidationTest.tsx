@@ -184,7 +184,7 @@ const LiquidationChart = memo(function LiquidationChart({
 
     const [brushedVolumes, setBrushedVolumes] = useState<{ long: number; short: number; total: number } | null>(null);
 
-    const option: EChartsOption = useMemo(() => {
+    const option = useMemo(() => {
         const markLines: any[] = [];
 
         // Helper function to find the closest label index for category axis
@@ -451,11 +451,11 @@ const LiquidationChart = memo(function LiquidationChart({
                 formatter: (val: string) => {
                     const data = priceDataMap.get(val);
                     if (!data) return '';
-                    
+
                     // Determine color based on predominance
                     const isLongPredominant = data.long_volume > data.short_volume;
                     const color = isLongPredominant ? '#10b981' : '#ef4444';
-                    
+
                     // Return rich text with color
                     return `{${isLongPredominant ? 'long' : 'short'}|${formatCurrency(Number(val))}}`;
                 },
@@ -683,13 +683,13 @@ const LiquidationChart = memo(function LiquidationChart({
             ],
             series
         };
-    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval, isInteracting]);
+    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval, isInteracting]) as EChartsOption;
 
     const onEvents = useMemo(() => ({
         datazoom: (params: any) => {
             // Mark interaction as complete when datazoom finishes
             setTimeout(() => setIsInteracting(false), 100);
-            
+
             if (chartRef.current) {
                 const chart = chartRef.current.getEchartsInstance();
                 const option = chart.getOption() as any;
