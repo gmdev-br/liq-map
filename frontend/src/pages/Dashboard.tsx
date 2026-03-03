@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { format } from 'date-fns';
 import { RefreshCw, Filter, Download, TrendingUp, TrendingDown, Activity } from 'lucide-react';
 import { useLiquidations, useLiquidationStats } from '@/hooks/useLiquidations';
@@ -43,6 +43,17 @@ function parseTimestamp(ts: string | number): Date {
   // Failed to parse
   return new Date(NaN);
 }
+
+// OPTIMIZED: Memoized timestamp formatter component to avoid IIFE in JSX
+const TimestampCell = memo(({ timestamp }: { timestamp: string | number }) => {
+  const formatted = useMemo(() => {
+    const dateObj = parseTimestamp(timestamp);
+    const isValid = !isNaN(dateObj.getTime());
+    return isValid ? format(dateObj, 'HH:mm:ss') : '--:--:--';
+  }, [timestamp]);
+
+  return <span className="text-sm text-white/50">{formatted}</span>;
+});
 
 export function Dashboard() {
   const [timeRange, setTimeRange] = useState('24h');
@@ -299,13 +310,8 @@ export function Dashboard() {
                       className="border-b border-white/5 transition-all duration-300 hover:bg-white/5"
                       style={{ animationDelay: `${index * 50}ms` }}
                     >
-                      <td className="px-6 py-4 text-sm text-white/50">
-                        {(() => {
-                          const ts = liquidation.timestamp;
-                          const dateObj = parseTimestamp(ts);
-                          const isValid = !isNaN(dateObj.getTime());
-                          return isValid ? format(dateObj, 'HH:mm:ss') : '--:--:--';
-                        })()}
+                      <td className="px-6 py-4">
+                        <TimestampCell timestamp={liquidation.timestamp} />
                       </td>
                       <td className="px-6 py-4 font-medium text-white">{liquidation.symbol}</td>
                       <td className="px-6 py-4">

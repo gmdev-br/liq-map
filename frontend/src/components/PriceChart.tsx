@@ -147,8 +147,13 @@ export function PriceChart({
     }
   }, [loadSavedZoomState]);
 
-  const formattedData = useMemo(() => {
-    return data.map((item) => {
+  // OPTIMIZED: Single pass O(n) instead of O(3n) - combines formatting and data extraction
+  const chartData: ChartData<'line' | 'bar'> = useMemo(() => {
+    const labels: string[] = [];
+    const values: number[] = [];
+
+    for (const item of data) {
+      // Parse date
       const rawValue = item[xAxisKey as keyof typeof item];
       let date: Date;
 
@@ -164,20 +169,11 @@ export function PriceChart({
         date = new Date();
       }
 
-      return {
-        ...item,
-        [xAxisKey]: date.toLocaleDateString(),
-        _rawDate: date,
-      };
-    });
-  }, [data, xAxisKey]);
-
-  const chartData: ChartData<'line' | 'bar'> = useMemo(() => {
-    const labels = formattedData.map((item) => String((item as Record<string, unknown>)[xAxisKey]));
-    const values = formattedData.map((item) => {
-      const val = (item as Record<string, unknown>)[dataKey];
-      return typeof val === 'number' ? val : 0;
-    });
+      // Extract label and value in single pass
+      labels.push(date.toLocaleDateString());
+      const val = item[dataKey as keyof typeof item];
+      values.push(typeof val === 'number' ? val : 0);
+    }
 
     return {
       labels,
@@ -199,7 +195,28 @@ export function PriceChart({
         },
       ],
     };
-  }, [formattedData, dataKey, xAxisKey, color, type]);
+
+    return {
+      labels,
+      datasets: [
+        {
+          label: dataKey,
+          data: values,
+          borderColor: color,
+          backgroundColor: type === 'area' ? `${color}33` : type === 'bar' ? color : 'transparent',
+          fill: type === 'area',
+          tension: 0.4,
+          pointRadius: type === 'line' || type === 'area' ? 0 : 4,
+          pointHoverRadius: 6,
+          pointHoverBackgroundColor: color,
+          pointHoverBorderColor: '#fff',
+          pointHoverBorderWidth: 2,
+          borderWidth: type === 'bar' ? 0 : 2,
+          borderRadius: type === 'bar' ? 4 : 0,
+        },
+      ],
+    };
+  }, [data, dataKey, xAxisKey, color, type]);
 
   const chartOptions: ChartOptions<'line' | 'bar'> = useMemo(
     () => ({

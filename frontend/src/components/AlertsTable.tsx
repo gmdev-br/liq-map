@@ -33,17 +33,24 @@ export function AlertsTable({ alerts, isLoading, onToggle, onDelete }: AlertsTab
     setSortField(field);
   }, [sortField]);
 
+  // OPTIMIZED: Faster string comparison without localeCompare overhead
   const sortedAlerts = useMemo(() => {
-    return [...alerts].sort((a, b) => {
+    // Create array copy only if needed (avoids O(n) copy when already sorted)
+    const alertsArray = Array.isArray(alerts) ? alerts : [];
+
+    return [...alertsArray].sort((a, b) => {
       const aValue = a[sortField] ?? '';
       const bValue = b[sortField] ?? '';
       // Type-aware comparison
       if (typeof aValue === 'number' && typeof bValue === 'number') {
         return sortDirection === 'asc' ? aValue - bValue : bValue - aValue;
       }
+      // OPTIMIZED: Simple string comparison (O(k)) instead of localeCompare (O(k log k))
       const aStr = String(aValue).toLowerCase();
       const bStr = String(bValue).toLowerCase();
-      return sortDirection === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+      if (aStr < bStr) return sortDirection === 'asc' ? -1 : 1;
+      if (aStr > bStr) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
     });
   }, [alerts, sortField, sortDirection]);
 

@@ -117,31 +117,43 @@ export function importFromJSON(file: File): Promise<any> {
     });
 }
 
+/**
+ * OPTIMIZED CSV line parser using state machine approach
+ * More efficient than character-by-character with repeated string concatenation
+ * Uses array buffering for better performance on large CSV files
+ */
 function parseCSVLine(line: string): string[] {
     const result: string[] = [];
-    let current = '';
+    const chars = line.split('');  // Pre-split for faster access
+    const len = chars.length;
+    let current: string[] = [];  // Use array buffer instead of string concatenation
     let inQuotes = false;
+    let i = 0;
 
-    for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        const nextChar = line[i + 1];
+    while (i < len) {
+        const char = chars[i];
 
         if (char === '"') {
-            if (inQuotes && nextChar === '"') {
-                current += '"';
-                i++;
+            if (inQuotes && i + 1 < len && chars[i + 1] === '"') {
+                // Escaped quote
+                current.push('"');
+                i += 2;
+                continue;
             } else {
                 inQuotes = !inQuotes;
             }
         } else if (char === ',' && !inQuotes) {
-            result.push(current.trim());
-            current = '';
+            // End of field - join buffer and trim
+            result.push(current.join('').trim());
+            current = [];
         } else {
-            current += char;
+            current.push(char);
         }
+        i++;
     }
 
-    result.push(current.trim());
+    // Add final field
+    result.push(current.join('').trim());
     return result;
 }
 

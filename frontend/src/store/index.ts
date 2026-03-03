@@ -64,15 +64,31 @@ export const useStore = create<AppState>()(
   )
 );
 
-// Apply theme on mount and changes
-if (typeof window !== 'undefined') {
-  const theme = localStorage.getItem('coinglass-storage');
-  if (theme) {
-    const parsed = JSON.parse(theme);
-    if (parsed.state?.settings?.theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
+// OPTIMIZED: Lazy initialization to avoid blocking main thread on startup
+// Uses requestIdleCallback or setTimeout to defer parsing
+const applyTheme = () => {
+  if (typeof window === 'undefined') return;
+
+  const apply = () => {
+    const theme = localStorage.getItem('coinglass-storage');
+    if (theme) {
+      try {
+        const parsed = JSON.parse(theme);
+        if (parsed.state?.settings?.theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      } catch { /* ignore parse errors */ }
     }
+  };
+
+  // Defer execution to avoid blocking initial render
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(apply, { timeout: 100 });
+  } else {
+    setTimeout(apply, 0);
   }
-}
+};
+
+applyTheme();

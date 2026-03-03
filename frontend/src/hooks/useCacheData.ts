@@ -176,39 +176,52 @@ export function useCacheDataMultiple<T>({
         const errorList: Error[] = [];
 
         try {
-            for (let i = 0; i < cacheKeys.length; i++) {
-                const key = cacheKeys[i];
-                const fetchFn = fetchFns[i];
+            // OPTIMIZED: Process cache checks in parallel first, then fetch missing data
+            const cacheChecks = cacheKeys.map(async (key, i) => {
+                if (forceRefresh) return { index: i, cached: null };
 
-                if (!forceRefresh) {
-                    let cachedData: T | null = null;
-                    if (isLargeDataKey(key)) {
-                        cachedData = await dbCache.get<T>(key);
-                    } else {
-                        cachedData = cache.get<T>(key);
-                    }
-
-                    if (cachedData !== null) {
-                        results[i] = cachedData;
-                        fromCacheFlags[i] = true;
-                        continue;
-                    }
+                let cachedData: T | null = null;
+                if (isLargeDataKey(key)) {
+                    cachedData = await dbCache.get<T>(key);
+                } else {
+                    cachedData = cache.get<T>(key);
                 }
+                return { index: i, cached: cachedData };
+            });
 
-                fromCacheFlags[i] = false;
-                try {
-                    const freshData = await fetchFn();
-                    if (isLargeDataKey(key)) {
-                        await dbCache.set(key, freshData, ttlMinutes);
-                    } else {
-                        cache.set(key, freshData, ttlMinutes);
-                    }
-                    results[i] = freshData;
-                } catch (err) {
-                    const errorObj = err instanceof Error ? err : new Error(String(err));
-                    errorList[i] = errorObj;
+            const cacheResults = await Promise.all(cacheChecks);
+
+            // Fill in cached results
+            for (const { index, cached } of cacheResults) {
+                if (cached !== null) {
+                    results[index] = cached;
+                    fromCacheFlags[index] = true;
                 }
             }
+
+            // Fetch missing data in parallel
+            const fetchPromises = cacheResults
+                .filter(({ cached }) => cached === null)
+                .map(async ({ index }) => {
+                    const key = cacheKeys[index];
+                    const fetchFn = fetchFns[index];
+
+                    fromCacheFlags[index] = false;
+                    try {
+                        const freshData = await fetchFn();
+                        if (isLargeDataKey(key)) {
+                            await dbCache.set(key, freshData, ttlMinutes);
+                        } else {
+                            cache.set(key, freshData, ttlMinutes);
+                        }
+                        results[index] = freshData;
+                    } catch (err) {
+                        const errorObj = err instanceof Error ? err : new Error(String(err));
+                        errorList[index] = errorObj;
+                    }
+                });
+
+            await Promise.all(fetchPromises);
 
             setData(results);
             setIsFromCache(fromCacheFlags);

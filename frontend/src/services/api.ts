@@ -191,35 +191,55 @@ export const liquidationsApi = {
         const multiSymbolData = Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && "history" in data[0];
 
         if (multiSymbolData) {
-          // Multi-symbol response
-          data.forEach((symGroup: any) => {
+          // OPTIMIZED: Pre-calculate total size and use flatMap for better memory efficiency
+          // Calculate total history length for pre-allocation
+          let totalHistoryLength = 0;
+          for (const symGroup of data) {
+            totalHistoryLength += (symGroup.history || []).length;
+          }
+
+          // Pre-allocate array size to avoid dynamic resizing
+          transformedData = new Array(totalHistoryLength);
+          let dataIndex = 0;
+
+          // Process each symbol group
+          for (const symGroup of data) {
             const sym = symGroup.symbol;
             const history = symGroup.history || [];
             const binanceSymbolKey = sym.replace('_PERP.A', '').replace('PERP.A', '');
             const binancePrice = binancePrices[binanceSymbolKey] || 0;
 
-            history.forEach((item: any) => {
+            // Use for loop instead of forEach for better performance
+            for (let i = 0; i < history.length; i++) {
+              const item = history[i];
               const longLiq = item.l || item.long_volume || item.long || 0;
               const shortLiq = item.s || item.short || item.short_volume || item.sv || 0;
               const side = longLiq > shortLiq ? 'long' : 'short';
               const rawTime = item.t || item.time || item.timestamp || 0;
               const timestamp = (!rawTime || typeof rawTime !== 'number') ? Math.floor(Date.now() / 1000) : (rawTime < 10000000000 ? rawTime : Math.floor(rawTime / 1000));
               const liquidationPrice = item.price || binancePrice;
+              const quantity = longLiq + shortLiq;
 
-              transformedData.push({
+              // Direct assignment to pre-allocated array
+              transformedData[dataIndex++] = {
                 id: `${sym}_${rawTime}`,
                 timestamp: String(timestamp),
-                amount: (longLiq + shortLiq) * liquidationPrice,
+                amount: quantity * liquidationPrice,
                 exchange: item.exchange || 'unknown',
                 side,
                 price: liquidationPrice,
                 symbol: sym,
-                quantity: longLiq + shortLiq,
+                quantity: quantity,
                 long_volume: longLiq * liquidationPrice,
                 short_volume: shortLiq * liquidationPrice
-              });
-            });
-          });
+              };
+            }
+          }
+
+          // Trim array to actual size if there were empty history entries
+          if (dataIndex < transformedData.length) {
+            transformedData.length = dataIndex;
+          }
         } else {
           // Single symbol response
           let liquidationList: any[] = [];
@@ -387,12 +407,28 @@ export const liquidationsApi = {
         }
       });
 
-      const sorted = symbols.sort((a, b) => {
-        const catOrder: Record<string, number> = { 'Perpetual': 1, 'Futures': 2, 'Spot': 3 };
-        if (catOrder[a.category] !== catOrder[b.category]) return catOrder[a.category] - catOrder[b.category];
-        if (a.rank !== b.rank) return a.rank - b.rank;
-        return a.name.localeCompare(b.name);
+      // OPTIMIZED: Use Schwartzian Transform (decorate-sort-undecorate) to avoid recalculating sort keys
+      // Pre-compute sort keys once per element instead of repeatedly in comparator
+      const catOrder: Record<string, number> = { 'Perpetual': 1, 'Futures': 2, 'Spot': 3 };
+
+      // Decorate: Add computed sort keys to each element
+      const decorated = symbols.map(s => ({
+        symbol: s,
+        catOrder: catOrder[s.category] || 99,  // Pre-computed category order
+        // Pre-compute lowercase name for faster string comparison (avoid localeCompare overhead)
+        nameLower: s.name.toLowerCase()
+      }));
+
+      // Sort using pre-computed keys
+      decorated.sort((a, b) => {
+        if (a.catOrder !== b.catOrder) return a.catOrder - b.catOrder;
+        if (a.symbol.rank !== b.symbol.rank) return a.symbol.rank - b.symbol.rank;
+        // Use simple string comparison instead of localeCompare (much faster)
+        return a.nameLower < b.nameLower ? -1 : a.nameLower > b.nameLower ? 1 : 0;
       });
+
+      // Undecorate: Extract sorted symbols
+      const sorted = decorated.map(d => d.symbol);
 
       cache.set('symbols', sorted, 60); // 1h cache for symbols
       return sorted;

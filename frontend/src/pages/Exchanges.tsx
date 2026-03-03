@@ -107,11 +107,14 @@ export function Exchanges() {
     return styles[status];
   };
 
-  const counts = useMemo(() => ({
-    online: displayExchanges.filter(e => e.api_status === 'online').length,
-    degraded: displayExchanges.filter(e => e.api_status === 'degraded').length,
-    offline: displayExchanges.filter(e => e.api_status === 'offline').length,
-  }), [displayExchanges]);
+  // OPTIMIZED: Single pass O(n) instead of O(3n) with 3 filters
+  const counts = useMemo(() =>
+    displayExchanges.reduce((acc, e) => {
+      acc[e.api_status] = (acc[e.api_status] || 0) + 1;
+      return acc;
+    }, { online: 0, degraded: 0, offline: 0 }),
+    [displayExchanges]
+  );
 
   return (
     <div className="space-y-6">
