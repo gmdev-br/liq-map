@@ -121,6 +121,21 @@ export function useWebSocket() {
 
     return () => {
       listeners.delete(listener);
+      // Clear reconnect timer
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      // Remove event handlers and close WebSocket
+      if (sharedWs) {
+        sharedWs.onopen = null;
+        sharedWs.onmessage = null;
+        sharedWs.onclose = null;
+        sharedWs.onerror = null;
+        sharedWs.close();
+        sharedWs = null;
+      }
+      isConnecting = false;
     };
   }, [connect]);
 

@@ -308,7 +308,7 @@ export function PriceChart({
   );
 
   // Reset zoom function
-  const resetZoom = () => {
+  const resetZoom = useCallback(() => {
     if (chartRef.current) {
       chartRef.current.resetZoom();
       // Clear saved zoom state
@@ -316,7 +316,7 @@ export function PriceChart({
         localStorage.removeItem(getZoomStorageKey(symbol));
       }
     }
-  };
+  }, [symbol]);
 
   if (!data || data.length === 0) {
     return (

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Building2, ExternalLink, CheckCircle2, XCircle, AlertCircle, RefreshCw, Server, Link2, Activity } from 'lucide-react';
 import { exchangesApi } from '@/services/api';
@@ -106,9 +107,11 @@ export function Exchanges() {
     return styles[status];
   };
 
-  const onlineCount = displayExchanges.filter((e) => e.api_status === 'online').length;
-  const degradedCount = displayExchanges.filter((e) => e.api_status === 'degraded').length;
-  const offlineCount = displayExchanges.filter((e) => e.api_status === 'offline').length;
+  const counts = useMemo(() => ({
+    online: displayExchanges.filter(e => e.api_status === 'online').length,
+    degraded: displayExchanges.filter(e => e.api_status === 'degraded').length,
+    offline: displayExchanges.filter(e => e.api_status === 'offline').length,
+  }), [displayExchanges]);
 
   return (
     <div className="space-y-6">
@@ -136,7 +139,7 @@ export function Exchanges() {
             </div>
             <div>
               <p className="text-sm text-white/50">Online</p>
-              <p className="text-2xl font-bold text-white">{onlineCount}</p>
+              <p className="text-2xl font-bold text-white">{counts.online}</p>
             </div>
           </div>
         </div>
@@ -148,7 +151,7 @@ export function Exchanges() {
             </div>
             <div>
               <p className="text-sm text-white/50">Degraded</p>
-              <p className="text-2xl font-bold text-white">{degradedCount}</p>
+              <p className="text-2xl font-bold text-white">{counts.degraded}</p>
             </div>
           </div>
         </div>
@@ -160,7 +163,7 @@ export function Exchanges() {
             </div>
             <div>
               <p className="text-sm text-white/50">Offline</p>
-              <p className="text-2xl font-bold text-white">{offlineCount}</p>
+              <p className="text-2xl font-bold text-white">{counts.offline}</p>
             </div>
           </div>
         </div>

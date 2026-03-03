@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Plus, Trash2, Bell, BellOff, AlertTriangle } from 'lucide-react';
@@ -64,37 +64,40 @@ export function Alerts() {
     });
   };
 
-  // Mock alerts for display
-  const mockAlerts = alerts || [
-    {
-      id: '1',
-      symbol: 'BTC/USDT',
-      condition: 'above' as const,
-      price: 50000,
-      active: true,
-      triggered: false,
-      created_at: new Date().toISOString(),
-    },
-    {
-      id: '2',
-      symbol: 'ETH/USDT',
-      condition: 'below' as const,
-      price: 2500,
-      active: true,
-      triggered: true,
-      triggered_at: new Date().toISOString(),
-      created_at: new Date(Date.now() - 86400000).toISOString(),
-    },
-    {
-      id: '3',
-      symbol: 'SOL/USDT',
-      condition: 'crosses' as const,
-      price: 150,
-      active: false,
-      triggered: false,
-      created_at: new Date(Date.now() - 172800000).toISOString(),
-    },
-  ];
+  // Memoized mock alerts - only processed when real data is empty
+  const mockAlerts = useMemo(() => {
+    if (alerts && alerts.length > 0) return alerts;
+    return [
+      {
+        id: '1',
+        symbol: 'BTC/USDT',
+        condition: 'above' as const,
+        price: 50000,
+        active: true,
+        triggered: false,
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: '2',
+        symbol: 'ETH/USDT',
+        condition: 'below' as const,
+        price: 2500,
+        active: true,
+        triggered: true,
+        triggered_at: new Date().toISOString(),
+        created_at: new Date(Date.now() - 86400000).toISOString(),
+      },
+      {
+        id: '3',
+        symbol: 'SOL/USDT',
+        condition: 'crosses' as const,
+        price: 150,
+        active: false,
+        triggered: false,
+        created_at: new Date(Date.now() - 172800000).toISOString(),
+      },
+    ];
+  }, [alerts]);
 
   const activeCount = mockAlerts.filter((a) => a.active).length;
 

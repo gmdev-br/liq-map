@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { format } from 'date-fns';
 import { Trash2, Bell, BellOff, CheckCircle2, XCircle, TrendingUp, TrendingDown, ArrowLeftRight } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -28,22 +28,24 @@ export function AlertsTable({ alerts, isLoading, onToggle, onDelete }: AlertsTab
   const [sortField, setSortField] = useState<keyof Alert>('created_at');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
-  const handleSort = (field: keyof Alert) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('desc');
-    }
-  };
+  const handleSort = useCallback((field: keyof Alert) => {
+    setSortDirection(prev => sortField === field && prev === 'asc' ? 'desc' : 'asc');
+    setSortField(field);
+  }, [sortField]);
 
-  const sortedAlerts = [...alerts].sort((a, b) => {
-    const aVal = a[sortField] ?? '';
-    const bVal = b[sortField] ?? '';
-    if (aVal === bVal) return 0;
-    const comparison = aVal < bVal ? -1 : 1;
-    return sortDirection === 'asc' ? comparison : -comparison;
-  });
+  const sortedAlerts = useMemo(() => {
+    return [...alerts].sort((a, b) => {
+      const aValue = a[sortField] ?? '';
+      const bValue = b[sortField] ?? '';
+      // Type-aware comparison
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return sortDirection === 'asc' ? aValue - bValue : bValue - aValue;
+      }
+      const aStr = String(aValue).toLowerCase();
+      const bStr = String(bValue).toLowerCase();
+      return sortDirection === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+    });
+  }, [alerts, sortField, sortDirection]);
 
   if (isLoading) {
     return (

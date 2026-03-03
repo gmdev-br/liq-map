@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { TrendingUp, TrendingDown, DollarSign, Activity, Zap, BarChart3, Flame } from 'lucide-react';
+import { useMemo } from 'react';
 import type { LiquidationStats } from '@/types';
 
 interface LiquidationCardProps {
@@ -38,7 +39,7 @@ export function LiquidationCard({ stats, isLoading }: LiquidationCardProps) {
     return null;
   }
 
-  const cards = [
+  const cards = useMemo(() => [
     {
       title: 'Total Liquidations',
       value: (stats.total_liquidations ?? stats.total_count ?? 0).toLocaleString(),
@@ -75,7 +76,7 @@ export function LiquidationCard({ stats, isLoading }: LiquidationCardProps) {
       iconColor: 'text-purple-400',
       glow: 'shadow-[0_0_20px_rgba(168,85,247,0.2)]',
     },
-  ];
+  ], [stats]);
 
   return (
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

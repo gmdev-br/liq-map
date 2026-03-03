@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
 import { RefreshCw, Filter, Download, TrendingUp, TrendingDown, Activity } from 'lucide-react';
 import { useLiquidations, useLiquidationStats } from '@/hooks/useLiquidations';
@@ -68,10 +68,32 @@ export function Dashboard() {
   // WebSocket for real-time data
   const { lastMessage } = useWebSocket();
 
+  // Use refs to batch updates and prevent render thrashing
+  const pendingUpdatesRef = useRef<any[]>([]);
+  const updateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (lastMessage && lastMessage.type === 'liquidation') {
-      setLiveLiquidations((prev) => [lastMessage.data, ...prev].slice(0, 50));
+      pendingUpdatesRef.current.push(lastMessage.data);
+      
+      if (!updateTimerRef.current) {
+        updateTimerRef.current = setTimeout(() => {
+          setLiveLiquidations((prev) => {
+            const newItems = pendingUpdatesRef.current;
+            pendingUpdatesRef.current = [];
+            updateTimerRef.current = null;
+            return [...newItems, ...prev].slice(0, 50);
+          });
+        }, 100); // Batch updates every 100ms
+      }
     }
+
+    return () => {
+      if (updateTimerRef.current) {
+        clearTimeout(updateTimerRef.current);
+        updateTimerRef.current = null;
+      }
+    };
   }, [lastMessage]);
 
   const allLiquidations = [...liveLiquidations, ...(liquidationsData?.data || [])];
@@ -83,10 +105,12 @@ export function Dashboard() {
     });
   };
 
-  // Calculate total liquidations amount
-  const totalAmount = allLiquidations.reduce((sum, liq) => sum + liq.amount, 0);
-  const longLiquidations = allLiquidations.filter(liq => liq.side === 'long').length;
-  const shortLiquidations = allLiquidations.filter(liq => liq.side === 'short').length;
+  // OPTIMIZED: Single reduce instead of multiple filter operations
+  const { totalAmount, longLiquidations, shortLiquidations } = allLiquidations.reduce((acc, liq) => ({
+    totalAmount: acc.totalAmount + liq.amount,
+    longLiquidations: acc.longLiquidations + (liq.side === 'long' ? 1 : 0),
+    shortLiquidations: acc.shortLiquidations + (liq.side === 'short' ? 1 : 0)
+  }), { totalAmount: 0, longLiquidations: 0, shortLiquidations: 0 });
 
   return (
     <div className="space-y-6">

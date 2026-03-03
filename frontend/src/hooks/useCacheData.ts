@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { cache } from '@/utils/cache';
 import { dbCache } from '@/utils/db';
 
@@ -37,8 +37,9 @@ export function useCacheData<T>({
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
     const [isFromCache, setIsFromCache] = useState(false);
+    const requestIdRef = useRef(0);
 
-    const fetchData = useCallback(async (forceRefresh = false) => {
+    const fetchData = useCallback(async (forceRefresh = false, backgroundRefresh = false) => {
         console.log(`[useCacheData] fetchData called - enabled: ${enabled}, forceRefresh: ${forceRefresh}, cacheKey: ${cacheKey}`);
         
         if (!enabled && !forceRefresh) {
@@ -46,7 +47,12 @@ export function useCacheData<T>({
             return;
         }
 
-        setIsLoading(true);
+        // Generate unique request ID for race condition prevention
+        const currentRequestId = ++requestIdRef.current;
+
+        if (!backgroundRefresh) {
+            setIsLoading(true);
+        }
         setError(null);
 
         try {
@@ -59,16 +65,28 @@ export function useCacheData<T>({
                 }
 
                 if (cachedData !== null) {
+                    // Check if request is still valid
+                    if (currentRequestId !== requestIdRef.current) return;
+                    
                     setData(cachedData);
                     setIsFromCache(true);
                     onSuccess?.(cachedData);
                     setIsLoading(false);
+                    
+                    // Stale-While-Revalidate: trigger background refresh
+                    setTimeout(() => fetchData(false, true), 0);
                     return;
                 }
             }
 
+            // Check if request is still valid before fetching
+            if (currentRequestId !== requestIdRef.current) return;
+            
             setIsFromCache(false);
             const freshData = await fetchFn();
+            
+            // Ignore stale responses
+            if (currentRequestId !== requestIdRef.current) return;
 
             if (isLargeDataKey(cacheKey)) {
                 await dbCache.set(cacheKey, freshData, ttlMinutes);
@@ -104,7 +122,8 @@ export function useCacheData<T>({
 
     useEffect(() => {
         fetchData(false);
-    }, []);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cacheKey, enabled]);
 
     return {
         data,

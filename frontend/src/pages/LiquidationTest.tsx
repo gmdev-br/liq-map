@@ -188,17 +188,66 @@ const LiquidationChart = memo(function LiquidationChart({
         const markLines: any[] = [];
 
         // Helper function to find the closest label index for category axis
+        // OPTIMIZATION: Pre-compute price -> index Map for O(1) lookup instead of O(n) linear search
+        const epsilon = 0.001; // Small tolerance for price comparison
+        const priceIndexMap = new Map<number, number>();
+        labels.forEach((price, idx) => {
+            const key = Math.round(price / epsilon);
+            // Keep the first occurrence for duplicate keys
+            if (!priceIndexMap.has(key)) {
+                priceIndexMap.set(key, idx);
+            }
+        });
+
         const findClosestLabelIndex = (target: number): number => {
             if (labels.length === 0) return 0;
+
+            // Try O(1) lookup first
+            const targetKey = Math.round(target / epsilon);
+            if (priceIndexMap.has(targetKey)) {
+                return priceIndexMap.get(targetKey)!;
+            }
+
+            // Fallback to binary search for closest match
+            let left = 0;
+            let right = labels.length - 1;
             let closestIdx = 0;
             let minDiff = Math.abs(labels[0] - target);
-            for (let i = 1; i < labels.length; i++) {
-                const diff = Math.abs(labels[i] - target);
+
+            while (left <= right) {
+                const mid = Math.floor((left + right) / 2);
+                const diff = Math.abs(labels[mid] - target);
+
                 if (diff < minDiff) {
                     minDiff = diff;
-                    closestIdx = i;
+                    closestIdx = mid;
+                }
+
+                if (labels[mid] < target) {
+                    left = mid + 1;
+                } else if (labels[mid] > target) {
+                    right = mid - 1;
+                } else {
+                    // Exact match found
+                    return mid;
                 }
             }
+
+            // Check neighbors for potentially closer match
+            if (closestIdx > 0) {
+                const leftDiff = Math.abs(labels[closestIdx - 1] - target);
+                if (leftDiff < minDiff) {
+                    closestIdx = closestIdx - 1;
+                    minDiff = leftDiff;
+                }
+            }
+            if (closestIdx < labels.length - 1) {
+                const rightDiff = Math.abs(labels[closestIdx + 1] - target);
+                if (rightDiff < minDiff) {
+                    closestIdx = closestIdx + 1;
+                }
+            }
+
             return closestIdx;
         };
 
@@ -1585,51 +1634,56 @@ export function LiquidationTest() {
         }
 
         // 7. Merge very small adjacent buckets in sparse areas (optional optimization)
+        // OPTIMIZATION: Use stack-based approach for O(n) instead of O(n²) nested loops
         const mergedBuckets: typeof buckets = [];
-        let i = 0;
 
-        while (i < buckets.length) {
+        for (let i = 0; i < buckets.length; i++) {
             const current = buckets[i];
-            let merged = { ...current };
 
-            // Try to merge with next bucket if both are in low-density areas
-            while (i + 1 < buckets.length) {
-                const next = buckets[i + 1];
-                const avgDensity = (normalizedDensities[currentBucketStart] || 0);
-
-                // Merge if both buckets are small and in sparse area
-                const isSparseArea = avgDensity < 0.3;
-                const isSmallBucket = merged.items.length < 3 && next.items.length < 3;
-                const combinedSize = merged.items.length + next.items.length;
-                const wouldBeReasonableSize = combinedSize <= Math.max(10, 15 / densityFactor);
-
-                if (isSparseArea && isSmallBucket && wouldBeReasonableSize) {
-                    merged = {
-                        priceStart: merged.priceStart,
-                        priceEnd: next.priceEnd,
-                        items: [...merged.items, ...next.items],
-                        targetInterval: merged.targetInterval + next.targetInterval
-                    };
-                    i++;
-                } else {
-                    break;
-                }
+            if (mergedBuckets.length === 0) {
+                mergedBuckets.push({ ...current });
+                continue;
             }
 
-            mergedBuckets.push(merged);
-            i++;
+            // Get the last merged bucket
+            const lastMerged = mergedBuckets[mergedBuckets.length - 1];
+
+            // Use current bucket's density index for merge decision
+            const densityIndex = Math.min(currentBucketStart, normalizedDensities.length - 1);
+            const avgDensity = normalizedDensities[densityIndex] || 0;
+
+            // Merge conditions
+            const isSparseArea = avgDensity < 0.3;
+            const isSmallBucket = lastMerged.items.length < 3 && current.items.length < 3;
+            const combinedSize = lastMerged.items.length + current.items.length;
+            const wouldBeReasonableSize = combinedSize <= Math.max(10, 15 / densityFactor);
+
+            if (isSparseArea && isSmallBucket && wouldBeReasonableSize) {
+                // Merge current into last merged bucket
+                mergedBuckets[mergedBuckets.length - 1] = {
+                    priceStart: lastMerged.priceStart,
+                    priceEnd: current.priceEnd,
+                    items: [...lastMerged.items, ...current.items],
+                    targetInterval: lastMerged.targetInterval + current.targetInterval
+                };
+            } else {
+                // Can't merge, add as new bucket
+                mergedBuckets.push({ ...current });
+            }
         }
 
         // 8. Aggregate data within each bucket
         const aggregated: HistoricalLiquidation[] = mergedBuckets.map(bucket => {
             const items = bucket.items;
-            const totalLongVolume = items.reduce((sum, item) => sum + item.long_volume, 0);
-            const totalShortVolume = items.reduce((sum, item) => sum + item.short_volume, 0);
+            // OPTIMIZED: Single reduce computing all values instead of 3 separate reduces
+            const { totalLongVolume, totalShortVolume, weightedPriceSum } = items.reduce((acc, item) => ({
+                totalLongVolume: acc.totalLongVolume + item.long_volume,
+                totalShortVolume: acc.totalShortVolume + item.short_volume,
+                weightedPriceSum: acc.weightedPriceSum + item.price * item.total_volume
+            }), { totalLongVolume: 0, totalShortVolume: 0, weightedPriceSum: 0 });
             const totalVolume = totalLongVolume + totalShortVolume;
 
             // Calculate weighted average price
-            const weightedPriceSum = items.reduce((sum, item) =>
-                sum + item.price * item.total_volume, 0);
             const avgPrice = totalVolume > 0 ? weightedPriceSum / totalVolume :
                 (bucket.priceStart + bucket.priceEnd) / 2;
 
@@ -1737,20 +1791,37 @@ export function LiquidationTest() {
         const intervalSize = priceRange / validTargetCount;
 
         // 4. Create exactly targetCount buckets
+        // OPTIMIZATION: Use two-pointer technique instead of O(n²) filter inside loop
         const buckets: {
             priceStart: number;
             priceEnd: number;
             items: HistoricalLiquidation[];
         }[] = [];
 
+        let dataIndex = 0;
         for (let i = 0; i < validTargetCount; i++) {
             const priceStart = minPrice + (i * intervalSize);
             const priceEnd = minPrice + ((i + 1) * intervalSize);
+            const isLastBucket = i === validTargetCount - 1;
 
-            // Find items within this bucket's price range
-            const bucketItems = sortedData.filter(item =>
-                item.price >= priceStart && (i === validTargetCount - 1 ? item.price <= priceEnd : item.price < priceEnd)
-            );
+            // Collect items for this bucket using two-pointer technique (O(n) total)
+            const bucketItems: HistoricalLiquidation[] = [];
+            while (dataIndex < sortedData.length) {
+                const item = sortedData[dataIndex];
+                // For last bucket, include items <= priceEnd; otherwise items < priceEnd
+                const priceCondition = isLastBucket ? item.price <= priceEnd : item.price < priceEnd;
+
+                if (item.price >= priceStart && priceCondition) {
+                    bucketItems.push(item);
+                    dataIndex++;
+                } else if (item.price < priceStart) {
+                    // This shouldn't happen if data is sorted, but skip just in case
+                    dataIndex++;
+                } else {
+                    // Item is beyond this bucket's range, move to next bucket
+                    break;
+                }
+            }
 
             buckets.push({
                 priceStart,
@@ -1762,13 +1833,15 @@ export function LiquidationTest() {
         // 5. Aggregate data within each bucket
         const aggregated: HistoricalLiquidation[] = buckets.map(bucket => {
             const items = bucket.items;
-            const totalLongVolume = items.reduce((sum, item) => sum + item.long_volume, 0);
-            const totalShortVolume = items.reduce((sum, item) => sum + item.short_volume, 0);
+            // OPTIMIZED: Single reduce computing all values instead of 3 separate reduces
+            const { totalLongVolume, totalShortVolume, weightedPriceSum } = items.reduce((acc, item) => ({
+                totalLongVolume: acc.totalLongVolume + item.long_volume,
+                totalShortVolume: acc.totalShortVolume + item.short_volume,
+                weightedPriceSum: acc.weightedPriceSum + item.price * item.total_volume
+            }), { totalLongVolume: 0, totalShortVolume: 0, weightedPriceSum: 0 });
             const totalVolume = totalLongVolume + totalShortVolume;
 
             // Calculate weighted average price
-            const weightedPriceSum = items.reduce((sum, item) =>
-                sum + item.price * item.total_volume, 0);
             const avgPrice = totalVolume > 0 ? weightedPriceSum / totalVolume :
                 (bucket.priceStart + bucket.priceEnd) / 2;
 
@@ -2010,24 +2083,41 @@ export function LiquidationTest() {
                 priceMap.set(dateKey, p.price);
             });
 
+            // OPTIMIZED: Binary search for O(log n) instead of O(n)
+            const binarySearchClosest = (sortedPrices: any[], targetTimestamp: number): any | null => {
+                let left = 0, right = sortedPrices.length - 1;
+                let closest = sortedPrices[0];
+                let minDiff = Infinity;
+
+                while (left <= right) {
+                    const mid = Math.floor((left + right) / 2);
+                    const diff = Math.abs(Number(sortedPrices[mid].timestamp) - targetTimestamp);
+
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closest = sortedPrices[mid];
+                    }
+
+                    if (Number(sortedPrices[mid].timestamp) < targetTimestamp) {
+                        left = mid + 1;
+                    } else {
+                        right = mid - 1;
+                    }
+                }
+                return closest;
+            };
+
             const getNormalizedPrice = (timestamp: number, itemPrice: number) => {
                 const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
                 let basePrice = priceMap.get(dateKey);
 
                 if (basePrice === undefined && sortedPrices.length > 0) {
-                    let nearest = sortedPrices[0];
-                    let minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
-                    for (const p of sortedPrices) {
-                        const diff = Math.abs(Number(p.timestamp) - timestamp);
-                        if (diff < minDiff) {
-                            minDiff = diff;
-                            nearest = p;
-                        } else if (diff > minDiff) {
-                            break;
+                    const nearest = binarySearchClosest(sortedPrices, timestamp);
+                    if (nearest) {
+                        const minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
+                        if (minDiff <= 7 * 24 * 60 * 60) {
+                            basePrice = nearest.price;
                         }
-                    }
-                    if (minDiff <= 7 * 24 * 60 * 60) {
-                        basePrice = nearest.price;
                     }
                 }
 
@@ -2137,24 +2227,41 @@ export function LiquidationTest() {
                         priceMap.set(dateKey, p.price);
                     });
 
+                    // OPTIMIZED: Binary search for O(log n) instead of O(n)
+                    const binarySearchClosest = (sortedPrices: any[], targetTimestamp: number): any | null => {
+                        let left = 0, right = sortedPrices.length - 1;
+                        let closest = sortedPrices[0];
+                        let minDiff = Infinity;
+
+                        while (left <= right) {
+                            const mid = Math.floor((left + right) / 2);
+                            const diff = Math.abs(Number(sortedPrices[mid].timestamp) - targetTimestamp);
+
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                closest = sortedPrices[mid];
+                            }
+
+                            if (Number(sortedPrices[mid].timestamp) < targetTimestamp) {
+                                left = mid + 1;
+                            } else {
+                                right = mid - 1;
+                            }
+                        }
+                        return closest;
+                    };
+
                     const getNormalizedPrice = (timestamp: number, itemPrice: number) => {
                         const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
                         let basePrice = priceMap.get(dateKey);
 
                         if (basePrice === undefined && sortedPrices.length > 0) {
-                            let nearest = sortedPrices[0];
-                            let minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
-                            for (const p of sortedPrices) {
-                                const diff = Math.abs(Number(p.timestamp) - timestamp);
-                                if (diff < minDiff) {
-                                    minDiff = diff;
-                                    nearest = p;
-                                } else if (diff > minDiff) {
-                                    break;
+                            const nearest = binarySearchClosest(sortedPrices, timestamp);
+                            if (nearest) {
+                                const minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
+                                if (minDiff <= 7 * 24 * 60 * 60) {
+                                    basePrice = nearest.price;
                                 }
-                            }
-                            if (minDiff <= 7 * 24 * 60 * 60) {
-                                basePrice = nearest.price;
                             }
                         }
 
@@ -2432,12 +2539,23 @@ export function LiquidationTest() {
         }
     }, [normalDistributionEnabled, processedData, normalDistScope, priceRangeMin, priceRangeMax]);
 
-    const stats = {
-        totalRecords: processedData.length,
-        totalVolume: processedData.reduce((sum, item) => sum + item.total_volume, 0),
-        avgVolume: processedData.length > 0 ? processedData.reduce((sum, item) => sum + item.total_volume, 0) / processedData.length : 0,
-        maxVolume: processedData.length > 0 ? Math.max(...processedData.map(item => item.total_volume)) : 0
-    };
+    // OPTIMIZED: Single pass reduce for stats calculation
+    const stats = (() => {
+        if (processedData.length === 0) {
+            return { totalRecords: 0, totalVolume: 0, avgVolume: 0, maxVolume: 0 };
+        }
+        const result = processedData.reduce((acc, item) => {
+            acc.totalVolume += item.total_volume;
+            acc.maxVolume = Math.max(acc.maxVolume, item.total_volume);
+            return acc;
+        }, { totalVolume: 0, maxVolume: 0 });
+        return {
+            totalRecords: processedData.length,
+            totalVolume: result.totalVolume,
+            avgVolume: result.totalVolume / processedData.length,
+            maxVolume: result.maxVolume
+        };
+    })();
 
     return (
         <div className="space-y-6">

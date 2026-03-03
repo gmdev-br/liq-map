@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { useStore } from '@/store';
 import { clsx } from 'clsx';
+import { useMemo } from 'react';
 import {
   LayoutDashboard,
   Building2,
@@ -13,16 +14,17 @@ import {
   ChevronRight,
 } from 'lucide-react';
 
-const navItems = [
-  { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/liquidation-test', icon: FlaskConical, label: 'Teste Liquidação' },
-  { path: '/exchanges', icon: Building2, label: 'Exchanges' },
-  { path: '/alerts', icon: Bell, label: 'Alerts' },
-  { path: '/settings', icon: Settings, label: 'Settings' },
-];
-
 export function Sidebar() {
   const { sidebarOpen, setSidebarOpen } = useStore();
+
+  // Memoized nav items to prevent unnecessary re-renders
+  const navItems = useMemo(() => [
+    { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
+    { path: '/liquidation-test', icon: FlaskConical, label: 'Teste Liquidação' },
+    { path: '/exchanges', icon: Building2, label: 'Exchanges' },
+    { path: '/alerts', icon: Bell, label: 'Alerts' },
+    { path: '/settings', icon: Settings, label: 'Settings' },
+  ], []);
 
   return (
     <>

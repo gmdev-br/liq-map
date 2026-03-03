@@ -29,41 +29,74 @@ const isProduction = (() => {
 
 const getBaseUrl = () => isProduction ? '' : '';
 
+// Fetch with retry and abort controller for request cancellation
+async function fetchWithRetry(url: string, options?: RequestInit, retries = 3): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+  
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (retries > 0 && error instanceof Error && error.name !== 'AbortError') {
+      await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries)));
+      return fetchWithRetry(url, options, retries - 1);
+    }
+    throw error;
+  }
+}
+
 const fetchBinancePrice = async (symbol: string): Promise<number> => {
   const cacheKey = `price_${symbol}`;
   const cached = cache.get<number>(cacheKey);
   if (cached) return cached;
 
-  try {
-    const binanceSymbol = symbol.replace('_PERP.A', '').replace('PERP.A', '');
-    const isPerp = symbol.includes('PERP.A');
-
-    let url: string;
-    if (isPerp) {
-      url = isProduction
-        ? `https://fapi.binance.com/fapi/v1/klines?symbol=${binanceSymbol}&interval=1d&limit=1`
-        : `/api/binance-futures/fapi/v1/klines?symbol=${binanceSymbol}&interval=1d&limit=1`;
-    } else {
-      url = isProduction
-        ? `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`
-        : `/api/binance-spot/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`;
-    }
-
-    const response = await axios.get(url, { timeout: 5000, validateStatus: (status) => status < 500 });
-    if (response.status === 400 || response.status === 404) {
-      cache.set(cacheKey, 0, 5); // Cache non-existent symbols for 5 mins
-      return 0;
-    }
-
-    const closePrice = response.data[0]?.[4];
-    const price = closePrice ? parseFloat(closePrice) : 0;
-
-    if (price > 0) cache.set(cacheKey, price, 1); // 1 min cache for prices
-    return price;
-  } catch (error: any) {
-    // Silent fail for prices, avoid console clutter
-    return 0;
+  // Deduplicate active requests
+  if (activeRequests.has(cacheKey)) {
+    console.log(`[API] Deduplicating price request for ${cacheKey}`);
+    return activeRequests.get(cacheKey);
   }
+
+  const fetchPromise = (async () => {
+    try {
+      const binanceSymbol = symbol.replace('_PERP.A', '').replace('PERP.A', '');
+      const isPerp = symbol.includes('PERP.A');
+
+      let url: string;
+      if (isPerp) {
+        url = isProduction
+          ? `https://fapi.binance.com/fapi/v1/klines?symbol=${binanceSymbol}&interval=1d&limit=1`
+          : `/api/binance-futures/fapi/v1/klines?symbol=${binanceSymbol}&interval=1d&limit=1`;
+      } else {
+        url = isProduction
+          ? `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`
+          : `/api/binance-spot/api/v3/klines?symbol=${binanceSymbol}&interval=1d&limit=1`;
+      }
+
+      const response = await axios.get(url, { timeout: 5000, validateStatus: (status) => status < 500 });
+      if (response.status === 400 || response.status === 404) {
+        cache.set(cacheKey, 0, 5); // Cache non-existent symbols for 5 mins
+        return 0;
+      }
+
+      const closePrice = response.data[0]?.[4];
+      const price = closePrice ? parseFloat(closePrice) : 0;
+
+      if (price > 0) cache.set(cacheKey, price, 1); // 1 min cache for prices
+      return price;
+    } catch (error: any) {
+      // Silent fail for prices, avoid console clutter
+      return 0;
+    } finally {
+      // Clean up from active requests
+      setTimeout(() => activeRequests.delete(cacheKey), 0);
+    }
+  })();
+
+  activeRequests.set(cacheKey, fetchPromise);
+  return fetchPromise;
 };
 
 const fetchMultipleBinancePrices = async (symbols: string[]): Promise<Record<string, number>> => {
@@ -147,10 +180,12 @@ export const liquidationsApi = {
 
     const fetchPromise = (async () => {
       try {
-        const data = await fetchWithProxy(targetUrl, false);
-
+        // Fetch main data and prices in parallel
         const symbolList = symbols.split(',');
-        const binancePrices = await fetchMultipleBinancePrices(symbolList);
+        const [data, binancePrices] = await Promise.all([
+          fetchWithProxy(targetUrl, false),
+          fetchMultipleBinancePrices(symbolList)
+        ]);
 
         let transformedData: Liquidation[] = [];
         const multiSymbolData = Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && "history" in data[0];
@@ -265,27 +300,23 @@ export const liquidationsApi = {
     const res = await liquidationsApi.getAll(params);
     const data = res.data.data;
 
-    let totalVolume = 0;
-    let maxVolume = 0;
-    let longCount = 0;
-    let shortCount = 0;
-
-    data.forEach((item: any) => {
-      totalVolume += item.amount;
-      if (item.amount > maxVolume) maxVolume = item.amount;
-      if (item.side === 'long') longCount++;
-      if (item.side === 'short') shortCount++;
-    });
+    // OPTIMIZED: Single reduce returning object instead of forEach with multiple accumulations
+    const stats = data.reduce((acc: any, item: any) => ({
+      totalVolume: acc.totalVolume + item.amount,
+      maxVolume: Math.max(acc.maxVolume, item.amount),
+      longCount: acc.longCount + (item.side === 'long' ? 1 : 0),
+      shortCount: acc.shortCount + (item.side === 'short' ? 1 : 0)
+    }), { totalVolume: 0, maxVolume: 0, longCount: 0, shortCount: 0 });
 
     return {
       data: {
         total_liquidations: data.length,
-        total_volume: totalVolume,
-        largest_liquidation: maxVolume,
-        avg_liquidation: data.length > 0 ? totalVolume / data.length : 0,
+        total_volume: stats.totalVolume,
+        largest_liquidation: stats.maxVolume,
+        avg_liquidation: data.length > 0 ? stats.totalVolume / data.length : 0,
         by_exchange: {},
         by_symbol: {},
-        by_side: { long: longCount, short: shortCount }
+        by_side: { long: stats.longCount, short: stats.shortCount }
       }
     };
   },

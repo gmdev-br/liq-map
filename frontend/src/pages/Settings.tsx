@@ -16,16 +16,18 @@ export function Settings() {
   const [validationMessage, setValidationMessage] = useState('');
 
   useEffect(() => {
-    // Load API key from localStorage on mount
-    const storedKey = localStorage.getItem('coinglass_api_key');
-    if (storedKey) {
-      setApiKey(storedKey);
-    }
+    // Batch read all settings from localStorage
+    const settings = {
+      apiKey: localStorage.getItem('coinglass_api_key'),
+      provider: localStorage.getItem('coinglass_provider'),
+    };
 
-    // Load provider preference
-    const storedProvider = localStorage.getItem('coinglass_provider');
-    if (storedProvider === 'coinapi' || storedProvider === 'coinalyze') {
-      setProvider(storedProvider);
+    // Update state once with all values
+    if (settings.apiKey) {
+      setApiKey(settings.apiKey);
+    }
+    if (settings.provider === 'coinapi' || settings.provider === 'coinalyze') {
+      setProvider(settings.provider);
     }
   }, []);
 
