@@ -8,11 +8,16 @@ export function Layout() {
   const { sidebarOpen } = useStore();
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen">
       <Sidebar />
-      <div className={clsx('transition-all duration-300 ease-in-out', sidebarOpen ? 'md:ml-64' : 'md:ml-16')}>
+      <div 
+        className={clsx(
+          'transition-all duration-500 ease-liquid min-h-screen',
+          sidebarOpen ? 'md:ml-72' : 'md:ml-20'
+        )}
+      >
         <Header />
-        <main className="p-4 md:p-6">
+        <main className="p-4 md:p-6 lg:p-8">
           <Outlet />
         </main>
       </div>
