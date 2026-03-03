@@ -36,6 +36,15 @@ interface HistoricalLiquidation {
     symbol?: string; // Optional: used for multi-asset breakdown
     original_price?: number; // Price of the asset before normalization
     symbolVolumes?: Record<string, { long: number; short: number; avgOriginalPrice: number }>; // For aggregated data
+    longLiquidationPrice?: number; // Price used for long liquidations (typically low for longs)
+    shortLiquidationPrice?: number; // Price used for short liquidations (typically high for shorts)
+}
+
+// Normalized price interface for OHLC data
+interface NormalizedPrice {
+    close: number;
+    high: number;
+    low: number;
 }
 
 // Liquidation Chart Component
@@ -1153,6 +1162,13 @@ export function LiquidationTest() {
     const [liquidationZonesColorByDelta, setLiquidationZonesColorByDelta] = useState(() => localStorage.getItem('liquidation_test_zones_color_by_delta') === 'true');
     const [liquidationZonesLongColor, setLiquidationZonesLongColor] = useState(() => localStorage.getItem('liquidation_test_zones_long_color') || '#10b981');
     const [liquidationZonesShortColor, setLiquidationZonesShortColor] = useState(() => localStorage.getItem('liquidation_test_zones_short_color') || '#ef4444');
+    // Price type for liquidations - 'close' uses close price, 'high_low' uses high for shorts and low for longs
+    const [liquidationPriceType, setLiquidationPriceType] = useState<'close' | 'high_low'>(() => {
+        const saved = localStorage.getItem('liquidation_test_price_type');
+        const initialValue = saved === 'high_low' ? 'high_low' : 'close';
+        console.log('[DEBUG] Initial liquidationPriceType loaded from localStorage:', { saved, initialValue });
+        return initialValue;
+    });
     const [clusterDensity, setClusterDensity] = useState(() => {
         const saved = Number(localStorage.getItem('liquidation_test_cluster_density'));
         // Migrate old 1-10 values to 1-100 range, or use default 50
@@ -1188,6 +1204,10 @@ export function LiquidationTest() {
     const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
     const isFetchingPriceRef = useRef(false);
 
+    // Refs para armazenar dados de preço para remapeamento quando liquidationPriceType muda
+    const priceMapRef = useRef<Map<string, NormalizedPrice>>(new Map());
+    const sortedPricesRef = useRef<any[]>([]);
+
     // Estado para controlar fetch manual vs cache
     const [shouldFetchNewData, setShouldFetchNewData] = useState(false);
     const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
@@ -1206,7 +1226,130 @@ export function LiquidationTest() {
         localStorage.setItem('liquidation_test_symbol', symbol);
         localStorage.setItem('liquidation_test_selected_symbols', JSON.stringify(selectedSymbols));
         localStorage.setItem('liquidation_test_tooltip_currency', tooltipCurrency);
-    }, [lineStyles, apiKey, isMultiAssetMode, symbol, selectedSymbols, tooltipCurrency]);
+        localStorage.setItem('liquidation_test_price_type', liquidationPriceType);
+    }, [lineStyles, apiKey, isMultiAssetMode, symbol, selectedSymbols, tooltipCurrency, liquidationPriceType]);
+
+    // DEBUG: Monitor liquidationPriceType changes
+    useEffect(() => {
+        console.log('[DEBUG] liquidationPriceType changed:', {
+            liquidationPriceType,
+            savedInLocalStorage: localStorage.getItem('liquidation_test_price_type'),
+            dataLength: data.length,
+            hasData: data.length > 0
+        });
+    }, [liquidationPriceType, data.length]);
+
+    // REMAPEAMENTO: Quando liquidationPriceType muda, remapear dados existentes
+    useEffect(() => {
+        // Só executar se há dados carregados e não estamos carregando
+        if (data.length === 0 || isLoading) return;
+
+        // Verificar se temos dados de preço disponíveis para remapeamento
+        if (priceMapRef.current.size === 0 || sortedPricesRef.current.length === 0) {
+            console.log('[REMAP] Dados de preço não disponíveis para remapeamento, ignorando');
+            return;
+        }
+
+        console.log('[REMAP] Iniciando remapeamento dos dados devido à mudança de liquidationPriceType:', {
+            liquidationPriceType,
+            dataCount: data.length,
+            priceMapSize: priceMapRef.current.size,
+            sortedPricesLength: sortedPricesRef.current.length
+        });
+
+        // Função de busca binária para encontrar preço mais próximo
+        const binarySearchClosest = (sortedPrices: any[], targetTimestamp: number): any | null => {
+            let left = 0, right = sortedPrices.length - 1;
+            let closest = sortedPrices[0];
+            let minDiff = Infinity;
+
+            while (left <= right) {
+                const mid = Math.floor((left + right) / 2);
+                const diff = Math.abs(Number(sortedPrices[mid].timestamp) - targetTimestamp);
+
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closest = sortedPrices[mid];
+                }
+
+                if (Number(sortedPrices[mid].timestamp) < targetTimestamp) {
+                    left = mid + 1;
+                } else {
+                    right = mid - 1;
+                }
+            }
+            return closest;
+        };
+
+        // Função para obter preço normalizado
+        const getNormalizedPrice = (timestamp: number, itemPrice: number): NormalizedPrice => {
+            const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
+            let basePrice = priceMapRef.current.get(dateKey);
+
+            if (basePrice === undefined && sortedPricesRef.current.length > 0) {
+                const nearest = binarySearchClosest(sortedPricesRef.current, timestamp);
+                if (nearest) {
+                    const minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
+                    if (minDiff <= 7 * 24 * 60 * 60) {
+                        basePrice = {
+                            close: nearest.price ?? nearest.close ?? itemPrice,
+                            high: nearest.high ?? nearest.price ?? itemPrice,
+                            low: nearest.low ?? nearest.price ?? itemPrice
+                        };
+                    }
+                }
+            }
+
+            if (basePrice === undefined || basePrice.close === 0) {
+                basePrice = {
+                    close: itemPrice,
+                    high: itemPrice,
+                    low: itemPrice
+                };
+            }
+
+            return basePrice;
+        };
+
+        // Remapear todos os dados com o novo liquidationPriceType
+        const remappedData = data.map((item): HistoricalLiquidation => {
+            const normalizedPrice = getNormalizedPrice(item.timestamp, item.original_price ?? item.price);
+
+            // Recalcular preços de liquidação baseado no novo tipo
+            const longLiquidationPrice = liquidationPriceType === 'high_low'
+                ? normalizedPrice.low   // Low price triggers long liquidations
+                : normalizedPrice.close;
+
+            const shortLiquidationPrice = liquidationPriceType === 'high_low'
+                ? normalizedPrice.high  // High price triggers short liquidations
+                : normalizedPrice.close;
+
+            return {
+                ...item,
+                price: normalizedPrice.close,
+                longLiquidationPrice,
+                shortLiquidationPrice
+            };
+        });
+
+        console.log('[REMAP] Remapeamento concluído:', {
+            liquidationPriceType,
+            dataCount: remappedData.length,
+            sample: remappedData.length > 0 ? {
+                longLiquidationPrice: remappedData[0].longLiquidationPrice,
+                shortLiquidationPrice: remappedData[0].shortLiquidationPrice,
+                price: remappedData[0].price
+            } : null
+        });
+
+        setData(remappedData);
+
+        // Invalidar cache para garantir que novos fetches usem o tipo correto
+        clearCache();
+        console.log('[REMAP] Cache invalidado para novos fetches');
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [liquidationPriceType]); // Só executar quando liquidationPriceType muda
 
     // Fetch available symbols on mount
     useEffect(() => {
@@ -1581,48 +1724,150 @@ export function LiquidationTest() {
             // Skip zero volume entries when side is specified
             if (side !== 'all' && total === 0) continue;
 
-            const price = item.price || 0;
-            const priceRange = Math.floor(price / interval) * interval;
-
-            // Track min/max inline (pass 1)
-            if (priceRange < minRange) minRange = priceRange;
-            if (priceRange > maxRange) maxRange = priceRange;
-
-            const safeR = Number(priceRange.toFixed(8));
-            const safeREnd = Number((priceRange + interval).toFixed(8));
-            const rangeKey = `${safeR}-${safeREnd}`;
-
-            // Aggregate inline (combined with filter)
-            if (!aggregated[rangeKey]) {
-                aggregated[rangeKey] = {
-                    priceRange: safeR,
-                    priceRangeEnd: safeREnd,
-                    long_volume: 0,
-                    short_volume: 0,
-                    total_volume: 0,
-                    count: 0,
-                    symbolVolumes: {}
-                };
-            }
-
-            const agg = aggregated[rangeKey];
-            agg.long_volume += long;
-            agg.short_volume += short;
-            agg.total_volume += total;
-            agg.count += 1;
-
-            if (item.symbol) {
-                if (!agg.symbolVolumes[item.symbol]) {
-                    agg.symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+            // When using high_low price type, bucket longs and shorts separately
+            if (liquidationPriceType === 'high_low' && side === 'all') {
+                // DEBUG: Log aggregation params
+                if (Math.random() < 0.001) {
+                    console.log('[DEBUG] aggregateByPriceInterval high_low mode:', {
+                        side,
+                        liquidationPriceType,
+                        hasLongLiquidationPrice: item.longLiquidationPrice !== undefined,
+                        hasShortLiquidationPrice: item.shortLiquidationPrice !== undefined,
+                        longLiquidationPrice: item.longLiquidationPrice,
+                        shortLiquidationPrice: item.shortLiquidationPrice,
+                        itemPrice: item.price
+                    });
                 }
-                const sv = agg.symbolVolumes[item.symbol];
-                const oldTotal = sv.long + sv.short;
-                sv.long += long;
-                sv.short += short;
-                const newTotal = sv.long + sv.short;
+                // Handle long volume with longLiquidationPrice (low price)
+                if (long > 0) {
+                    const longPrice = item.longLiquidationPrice || item.price || 0;
+                    const longPriceRange = Math.floor(longPrice / interval) * interval;
 
-                if (newTotal > 0 && item.original_price) {
-                    sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * total)) / newTotal;
+                    if (longPriceRange < minRange) minRange = longPriceRange;
+                    if (longPriceRange > maxRange) maxRange = longPriceRange;
+
+                    const safeR = Number(longPriceRange.toFixed(8));
+                    const safeREnd = Number((longPriceRange + interval).toFixed(8));
+                    const rangeKey = `${safeR}-${safeREnd}`;
+
+                    if (!aggregated[rangeKey]) {
+                        aggregated[rangeKey] = {
+                            priceRange: safeR,
+                            priceRangeEnd: safeREnd,
+                            long_volume: 0,
+                            short_volume: 0,
+                            total_volume: 0,
+                            count: 0,
+                            symbolVolumes: {}
+                        };
+                    }
+
+                    const agg = aggregated[rangeKey];
+                    agg.long_volume += long;
+                    agg.total_volume += long;
+                    agg.count += 1;
+
+                    if (item.symbol) {
+                        if (!agg.symbolVolumes[item.symbol]) {
+                            agg.symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+                        }
+                        const sv = agg.symbolVolumes[item.symbol];
+                        const oldTotal = sv.long + sv.short;
+                        sv.long += long;
+                        const newTotal = sv.long + sv.short;
+                        if (newTotal > 0 && item.original_price) {
+                            sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * long)) / newTotal;
+                        }
+                    }
+                }
+
+                // Handle short volume with shortLiquidationPrice (high price)
+                if (short > 0) {
+                    const shortPrice = item.shortLiquidationPrice || item.price || 0;
+                    const shortPriceRange = Math.floor(shortPrice / interval) * interval;
+
+                    if (shortPriceRange < minRange) minRange = shortPriceRange;
+                    if (shortPriceRange > maxRange) maxRange = shortPriceRange;
+
+                    const safeR = Number(shortPriceRange.toFixed(8));
+                    const safeREnd = Number((shortPriceRange + interval).toFixed(8));
+                    const rangeKey = `${safeR}-${safeREnd}`;
+
+                    if (!aggregated[rangeKey]) {
+                        aggregated[rangeKey] = {
+                            priceRange: safeR,
+                            priceRangeEnd: safeREnd,
+                            long_volume: 0,
+                            short_volume: 0,
+                            total_volume: 0,
+                            count: 0,
+                            symbolVolumes: {}
+                        };
+                    }
+
+                    const agg = aggregated[rangeKey];
+                    agg.short_volume += short;
+                    agg.total_volume += short;
+                    agg.count += 1;
+
+                    if (item.symbol) {
+                        if (!agg.symbolVolumes[item.symbol]) {
+                            agg.symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+                        }
+                        const sv = agg.symbolVolumes[item.symbol];
+                        const oldTotal = sv.long + sv.short;
+                        sv.short += short;
+                        const newTotal = sv.long + sv.short;
+                        if (newTotal > 0 && item.original_price) {
+                            sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * short)) / newTotal;
+                        }
+                    }
+                }
+            } else {
+                // Standard behavior: use item.price for bucketing
+                const price = item.price || 0;
+                const priceRange = Math.floor(price / interval) * interval;
+
+                // Track min/max inline (pass 1)
+                if (priceRange < minRange) minRange = priceRange;
+                if (priceRange > maxRange) maxRange = priceRange;
+
+                const safeR = Number(priceRange.toFixed(8));
+                const safeREnd = Number((priceRange + interval).toFixed(8));
+                const rangeKey = `${safeR}-${safeREnd}`;
+
+                // Aggregate inline (combined with filter)
+                if (!aggregated[rangeKey]) {
+                    aggregated[rangeKey] = {
+                        priceRange: safeR,
+                        priceRangeEnd: safeREnd,
+                        long_volume: 0,
+                        short_volume: 0,
+                        total_volume: 0,
+                        count: 0,
+                        symbolVolumes: {}
+                    };
+                }
+
+                const agg = aggregated[rangeKey];
+                agg.long_volume += long;
+                agg.short_volume += short;
+                agg.total_volume += total;
+                agg.count += 1;
+
+                if (item.symbol) {
+                    if (!agg.symbolVolumes[item.symbol]) {
+                        agg.symbolVolumes[item.symbol] = { long: 0, short: 0, avgOriginalPrice: 0 };
+                    }
+                    const sv = agg.symbolVolumes[item.symbol];
+                    const oldTotal = sv.long + sv.short;
+                    sv.long += long;
+                    sv.short += short;
+                    const newTotal = sv.long + sv.short;
+
+                    if (newTotal > 0 && item.original_price) {
+                        sv.avgOriginalPrice = ((sv.avgOriginalPrice * oldTotal) + (item.original_price * total)) / newTotal;
+                    }
                 }
             }
         }
@@ -1664,7 +1909,7 @@ export function LiquidationTest() {
                 symbolVolumes: item.symbolVolumes
             };
         }).sort((a, b) => a.price - b.price);
-    }, [side]);
+    }, [side, liquidationPriceType]);
 
     /**
      * Adaptive/Dynamic Interval Clustering Algorithm
@@ -1692,22 +1937,73 @@ export function LiquidationTest() {
         userMinInterval?: number,
         userMaxInterval?: number
     ): HistoricalLiquidation[] => {
-        // 1. Apply side filter first
-        const sideAffectedData = rawData.map(item => {
-            const long = side === 'short' ? 0 : item.long_volume;
-            const short = side === 'long' ? 0 : item.short_volume;
-            return {
-                ...item,
-                long_volume: long,
-                short_volume: short,
-                total_volume: long + short,
-                long_short_ratio: long / (short || 1)
-            };
-        });
+        // 1. Apply side filter and handle high_low price type
+        let processedData: HistoricalLiquidation[];
 
-        let filtered = sideAffectedData;
+        if (liquidationPriceType === 'high_low' && side === 'all') {
+            // Split items into separate long and short entries with their respective liquidation prices
+            processedData = [];
+            for (const item of rawData) {
+                // Add long entry if there's long volume
+                if (item.long_volume > 0) {
+                    processedData.push({
+                        ...item,
+                        price: item.longLiquidationPrice || item.price,
+                        long_volume: item.long_volume,
+                        short_volume: 0,
+                        total_volume: item.long_volume,
+                        long_short_ratio: item.long_volume // long / 1 (since short is 0)
+                    });
+                }
+                // Add short entry if there's short volume
+                if (item.short_volume > 0) {
+                    processedData.push({
+                        ...item,
+                        price: item.shortLiquidationPrice || item.price,
+                        long_volume: 0,
+                        short_volume: item.short_volume,
+                        total_volume: item.short_volume,
+                        long_short_ratio: -item.short_volume // -(short / 1) (since long is 0)
+                    });
+                }
+            }
+        } else if (liquidationPriceType === 'high_low') {
+            // For specific side, use the corresponding liquidation price
+            processedData = rawData.map(item => {
+                const long = side === 'short' ? 0 : item.long_volume;
+                const short = side === 'long' ? 0 : item.short_volume;
+                const usePrice = side === 'long'
+                    ? (item.longLiquidationPrice || item.price)
+                    : side === 'short'
+                        ? (item.shortLiquidationPrice || item.price)
+                        : item.price;
+                return {
+                    ...item,
+                    price: usePrice,
+                    long_volume: long,
+                    short_volume: short,
+                    total_volume: long + short,
+                    long_short_ratio: long / (short || 1)
+                };
+            });
+        } else {
+            // Standard behavior with close price
+            processedData = rawData.map(item => {
+                const long = side === 'short' ? 0 : item.long_volume;
+                const short = side === 'long' ? 0 : item.short_volume;
+                return {
+                    ...item,
+                    long_volume: long,
+                    short_volume: short,
+                    total_volume: long + short,
+                    long_short_ratio: long / (short || 1)
+                };
+            });
+        }
+
+        let filtered = processedData;
         if (side !== 'all') {
-            filtered = sideAffectedData.filter(item => item.total_volume > 0);
+            filtered = processedData.filter(item => item.total_volume > 0);
         }
 
         if (filtered.length === 0) return [];
@@ -2020,7 +2316,7 @@ export function LiquidationTest() {
         }
 
         return aggregated.sort((a, b) => a.price - b.price);
-    }, [side]);
+    }, [side, liquidationPriceType]);
 
     /**
      * Fixed Count Interval Clustering Algorithm
@@ -2041,25 +2337,79 @@ export function LiquidationTest() {
         // Validate target count
         const validTargetCount = Math.max(1, Math.min(500, targetCount));
 
-        // 1. Apply side filter first
-        const sideAffectedData = rawData.map(item => {
-            const long = side === 'short' ? 0 : item.long_volume;
-            const short = side === 'long' ? 0 : item.short_volume;
-            const ratio = long >= short
-                ? long / Math.max(1, short)
-                : -(short / Math.max(1, long));
-            return {
-                ...item,
-                long_volume: long,
-                short_volume: short,
-                total_volume: long + short,
-                long_short_ratio: ratio
-            };
-        });
+        // 1. Apply side filter and handle high_low price type
+        let processedData: HistoricalLiquidation[];
 
-        let filtered = sideAffectedData;
+        if (liquidationPriceType === 'high_low' && side === 'all') {
+            // Split items into separate long and short entries with their respective liquidation prices
+            processedData = [];
+            for (const item of rawData) {
+                // Add long entry if there's long volume
+                if (item.long_volume > 0) {
+                    processedData.push({
+                        ...item,
+                        price: item.longLiquidationPrice || item.price,
+                        long_volume: item.long_volume,
+                        short_volume: 0,
+                        total_volume: item.long_volume,
+                        long_short_ratio: item.long_volume // long / 1 (since short is 0)
+                    });
+                }
+                // Add short entry if there's short volume
+                if (item.short_volume > 0) {
+                    processedData.push({
+                        ...item,
+                        price: item.shortLiquidationPrice || item.price,
+                        long_volume: 0,
+                        short_volume: item.short_volume,
+                        total_volume: item.short_volume,
+                        long_short_ratio: -item.short_volume // -(short / 1) (since long is 0)
+                    });
+                }
+            }
+        } else if (liquidationPriceType === 'high_low') {
+            // For specific side, use the corresponding liquidation price
+            processedData = rawData.map(item => {
+                const long = side === 'short' ? 0 : item.long_volume;
+                const short = side === 'long' ? 0 : item.short_volume;
+                const ratio = long >= short
+                    ? long / Math.max(1, short)
+                    : -(short / Math.max(1, long));
+                const usePrice = side === 'long'
+                    ? (item.longLiquidationPrice || item.price)
+                    : side === 'short'
+                        ? (item.shortLiquidationPrice || item.price)
+                        : item.price;
+                return {
+                    ...item,
+                    price: usePrice,
+                    long_volume: long,
+                    short_volume: short,
+                    total_volume: long + short,
+                    long_short_ratio: ratio
+                };
+            });
+        } else {
+            // Standard behavior with close price
+            processedData = rawData.map(item => {
+                const long = side === 'short' ? 0 : item.long_volume;
+                const short = side === 'long' ? 0 : item.short_volume;
+                const ratio = long >= short
+                    ? long / Math.max(1, short)
+                    : -(short / Math.max(1, long));
+                return {
+                    ...item,
+                    long_volume: long,
+                    short_volume: short,
+                    total_volume: long + short,
+                    long_short_ratio: ratio
+                };
+            });
+        }
+
+        let filtered = processedData;
         if (side !== 'all') {
-            filtered = sideAffectedData.filter(item => item.total_volume > 0);
+            filtered = processedData.filter(item => item.total_volume > 0);
         }
 
         if (filtered.length === 0) return [];
@@ -2169,7 +2519,7 @@ export function LiquidationTest() {
         return aggregated
             .filter(bucket => bucket.total_volume > 0 || buckets.length <= 100)
             .sort((a, b) => a.price - b.price);
-    }, [side]);
+    }, [side, liquidationPriceType]);
 
     // Calculate a "smart" interval based on price range and desired cluster density
     const calculateSmartInterval = (rawData: HistoricalLiquidation[], density: number): number => {
@@ -2359,9 +2709,10 @@ export function LiquidationTest() {
         }
     };
 
+    // Cache key includes price type version for invalidation when changing price types
     const cacheKeyBase = isMultiAssetMode
-        ? `liquidation_multi_v2_${[...selectedSymbols].sort().join('-')}_${months}`
-        : `liquidation_v2_${symbol}_${months}`;
+        ? `liquidation_multi_v3_${liquidationPriceType}_${[...selectedSymbols].sort().join('-')}_${months}`
+        : `liquidation_v3_${liquidationPriceType}_${symbol}_${months}`;
 
     // Hook de cache - desabilitado para evitar fetch automático
     const { isLoading, refetch, isFromCache, clearCache } = useCacheData({
@@ -2374,14 +2725,23 @@ export function LiquidationTest() {
             if (!data) return;
 
             const priceData = Array.isArray(data.price) ? data.price : [];
-            const priceMap = new Map();
+            const priceMap = new Map<string, NormalizedPrice>();
             const sortedPrices = [...priceData].sort((a: any, b: any) => Number(a.timestamp) - Number(b.timestamp));
 
             sortedPrices.forEach((p: any) => {
                 const ts = Number(p.timestamp);
                 const dateKey = new Date(ts * 1000).toISOString().split('T')[0];
-                priceMap.set(dateKey, p.price);
+                // Store OHLC data - fallback to price if high/low not available
+                priceMap.set(dateKey, {
+                    close: p.price ?? p.close ?? 0,
+                    high: p.high ?? p.price ?? 0,
+                    low: p.low ?? p.price ?? 0
+                });
             });
+
+            // Armazenar nos refs para remapeamento futuro
+            priceMapRef.current = priceMap;
+            sortedPricesRef.current = sortedPrices;
 
             // OPTIMIZED: Binary search for O(log n) instead of O(n)
             const binarySearchClosest = (sortedPrices: any[], targetTimestamp: number): any | null => {
@@ -2407,7 +2767,7 @@ export function LiquidationTest() {
                 return closest;
             };
 
-            const getNormalizedPrice = (timestamp: number, itemPrice: number) => {
+            const getNormalizedPrice = (timestamp: number, itemPrice: number): NormalizedPrice => {
                 const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
                 let basePrice = priceMap.get(dateKey);
 
@@ -2416,27 +2776,58 @@ export function LiquidationTest() {
                     if (nearest) {
                         const minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
                         if (minDiff <= 7 * 24 * 60 * 60) {
-                            basePrice = nearest.price;
+                            // Return OHLC from nearest data point
+                            basePrice = {
+                                close: nearest.price ?? nearest.close ?? itemPrice,
+                                high: nearest.high ?? nearest.price ?? itemPrice,
+                                low: nearest.low ?? nearest.price ?? itemPrice
+                            };
                         }
                     }
                 }
 
-                if (basePrice === undefined || basePrice === 0) {
-                    basePrice = itemPrice;
+                if (basePrice === undefined || basePrice.close === 0) {
+                    // Fallback to item price for all values
+                    basePrice = {
+                        close: itemPrice,
+                        high: itemPrice,
+                        low: itemPrice
+                    };
+                }
+
+                // DEBUG: Log first few calls to verify high/low values
+                if (Math.random() < 0.001) {
+                    console.log('[DEBUG] getNormalizedPrice:', { timestamp, itemPrice, result: basePrice, hasHighLow: basePrice.high !== basePrice.low });
                 }
 
                 return basePrice;
             };
 
-            const mapLiquidationItem = (item: any, symbolLabel?: string) => {
+            const mapLiquidationItem = (item: any, symbolLabel?: string): HistoricalLiquidation => {
                 const timestamp = Number(item.timestamp);
                 const itemPrice = Number(item.price);
-                const finalPrice = getNormalizedPrice(timestamp, itemPrice);
+                const normalizedPrice = getNormalizedPrice(timestamp, itemPrice);
 
                 const longVolume = item.long_volume !== undefined ? item.long_volume : (item.side === 'long' ? item.amount : 0);
                 const shortVolume = item.short_volume !== undefined ? item.short_volume : (item.side === 'short' ? item.amount : 0);
 
-                return {
+                // Determine prices based on liquidationPriceType setting
+                // For 'close': use close price for everything (backward compatible)
+                // For 'high_low': use low price for longs (low price triggers long liquidations)
+                //                 use high price for shorts (high price triggers short liquidations)
+                const finalPrice = liquidationPriceType === 'high_low'
+                    ? normalizedPrice.close  // Keep close as the main price for compatibility
+                    : normalizedPrice.close;
+
+                const longLiquidationPrice = liquidationPriceType === 'high_low'
+                    ? normalizedPrice.low   // Low price triggers long liquidations
+                    : normalizedPrice.close;
+
+                const shortLiquidationPrice = liquidationPriceType === 'high_low'
+                    ? normalizedPrice.high  // High price triggers short liquidations
+                    : normalizedPrice.close;
+
+                const result = {
                     timestamp: timestamp,
                     long_volume: longVolume,
                     short_volume: shortVolume,
@@ -2446,8 +2837,24 @@ export function LiquidationTest() {
                         : -(shortVolume / Math.max(1, longVolume)),
                     price: finalPrice,
                     symbol: symbolLabel,
-                    original_price: itemPrice
+                    original_price: itemPrice,
+                    longLiquidationPrice: longLiquidationPrice,
+                    shortLiquidationPrice: shortLiquidationPrice
                 };
+
+                // DEBUG: Log first few items to verify mapping
+                if (Math.random() < 0.001) {
+                    console.log('[DEBUG] mapLiquidationItem:', {
+                        liquidationPriceType,
+                        itemPrice,
+                        normalizedPrice,
+                        longLiquidationPrice: result.longLiquidationPrice,
+                        shortLiquidationPrice: result.shortLiquidationPrice,
+                        hasDifferentPrices: result.longLiquidationPrice !== result.shortLiquidationPrice
+                    });
+                }
+
+                return result;
             };
 
             let allMapped: HistoricalLiquidation[] = [];
@@ -2466,6 +2873,15 @@ export function LiquidationTest() {
 
             allMapped.sort((a, b) => a.timestamp - b.timestamp);
 
+            console.log('[DEBUG] Setting data from API:', {
+                liquidationPriceType,
+                dataCount: allMapped.length,
+                sample: allMapped.length > 0 ? {
+                    longLiquidationPrice: allMapped[0].longLiquidationPrice,
+                    shortLiquidationPrice: allMapped[0].shortLiquidationPrice,
+                    price: allMapped[0].price
+                } : null
+            });
             setData(allMapped);
 
             // Set current price from the last price data entry
@@ -2518,14 +2934,23 @@ export function LiquidationTest() {
                     console.log('[Cache] Dados encontrados no cache:', cacheKeyBase);
 
                     const priceData = Array.isArray(cachedData.price) ? cachedData.price : [];
-                    const priceMap = new Map();
+                    const priceMap = new Map<string, NormalizedPrice>();
                     const sortedPrices = [...priceData].sort((a: any, b: any) => Number(a.timestamp) - Number(b.timestamp));
 
                     sortedPrices.forEach((p: any) => {
                         const ts = Number(p.timestamp);
                         const dateKey = new Date(ts * 1000).toISOString().split('T')[0];
-                        priceMap.set(dateKey, p.price);
+                        // Store OHLC data - fallback to price if high/low not available
+                        priceMap.set(dateKey, {
+                            close: p.price ?? p.close ?? 0,
+                            high: p.high ?? p.price ?? 0,
+                            low: p.low ?? p.price ?? 0
+                        });
                     });
+
+                    // Armazenar nos refs para remapeamento futuro
+                    priceMapRef.current = priceMap;
+                    sortedPricesRef.current = sortedPrices;
 
                     // OPTIMIZED: Binary search for O(log n) instead of O(n)
                     const binarySearchClosest = (sortedPrices: any[], targetTimestamp: number): any | null => {
@@ -2551,7 +2976,7 @@ export function LiquidationTest() {
                         return closest;
                     };
 
-                    const getNormalizedPrice = (timestamp: number, itemPrice: number) => {
+                    const getNormalizedPrice = (timestamp: number, itemPrice: number): NormalizedPrice => {
                         const dateKey = new Date(timestamp * 1000).toISOString().split('T')[0];
                         let basePrice = priceMap.get(dateKey);
 
@@ -2560,25 +2985,51 @@ export function LiquidationTest() {
                             if (nearest) {
                                 const minDiff = Math.abs(Number(nearest.timestamp) - timestamp);
                                 if (minDiff <= 7 * 24 * 60 * 60) {
-                                    basePrice = nearest.price;
+                                    // Return OHLC from nearest data point
+                                    basePrice = {
+                                        close: nearest.price ?? nearest.close ?? itemPrice,
+                                        high: nearest.high ?? nearest.price ?? itemPrice,
+                                        low: nearest.low ?? nearest.price ?? itemPrice
+                                    };
                                 }
                             }
                         }
 
-                        if (basePrice === undefined || basePrice === 0) {
-                            basePrice = itemPrice;
+                        if (basePrice === undefined || basePrice.close === 0) {
+                            // Fallback to item price for all values
+                            basePrice = {
+                                close: itemPrice,
+                                high: itemPrice,
+                                low: itemPrice
+                            };
                         }
 
                         return basePrice;
                     };
 
-                    const mapLiquidationItem = (item: any, symbolLabel?: string) => {
+                    const mapLiquidationItem = (item: any, symbolLabel?: string): HistoricalLiquidation => {
                         const timestamp = Number(item.timestamp);
                         const itemPrice = Number(item.price);
-                        const finalPrice = getNormalizedPrice(timestamp, itemPrice);
+                        const normalizedPrice = getNormalizedPrice(timestamp, itemPrice);
 
                         const longVolume = item.long_volume !== undefined ? item.long_volume : (item.side === 'long' ? item.amount : 0);
                         const shortVolume = item.short_volume !== undefined ? item.short_volume : (item.side === 'short' ? item.amount : 0);
+
+                        // Determine prices based on liquidationPriceType setting
+                        // For 'close': use close price for everything (backward compatible)
+                        // For 'high_low': use low price for longs (low price triggers long liquidations)
+                        //                 use high price for shorts (high price triggers short liquidations)
+                        const finalPrice = liquidationPriceType === 'high_low'
+                            ? normalizedPrice.close  // Keep close as the main price for compatibility
+                            : normalizedPrice.close;
+
+                        const longLiquidationPrice = liquidationPriceType === 'high_low'
+                            ? normalizedPrice.low   // Low price triggers long liquidations
+                            : normalizedPrice.close;
+
+                        const shortLiquidationPrice = liquidationPriceType === 'high_low'
+                            ? normalizedPrice.high  // High price triggers short liquidations
+                            : normalizedPrice.close;
 
                         return {
                             timestamp: timestamp,
@@ -2590,7 +3041,9 @@ export function LiquidationTest() {
                                 : -(shortVolume / Math.max(1, longVolume)),
                             price: finalPrice,
                             symbol: symbolLabel,
-                            original_price: itemPrice
+                            original_price: itemPrice,
+                            longLiquidationPrice: longLiquidationPrice,
+                            shortLiquidationPrice: shortLiquidationPrice
                         };
                     };
 
@@ -2610,6 +3063,15 @@ export function LiquidationTest() {
 
                     allMapped.sort((a, b) => a.timestamp - b.timestamp);
 
+                    console.log('[DEBUG] Setting data from cache:', {
+                        liquidationPriceType,
+                        dataCount: allMapped.length,
+                        sample: allMapped.length > 0 ? {
+                            longLiquidationPrice: allMapped[0].longLiquidationPrice,
+                            shortLiquidationPrice: allMapped[0].shortLiquidationPrice,
+                            price: allMapped[0].price
+                        } : null
+                    });
                     setData(allMapped);
 
                     if (priceData.length > 0) {
@@ -2725,6 +3187,18 @@ export function LiquidationTest() {
     };
 
     useEffect(() => {
+        console.log('[DEBUG] Data processing useEffect running:', {
+            liquidationPriceType,
+            side,
+            dataLength: data.length,
+            sampleData: data.length > 0 ? {
+                hasLongLiqPrice: data[0].longLiquidationPrice !== undefined,
+                hasShortLiqPrice: data[0].shortLiquidationPrice !== undefined,
+                sampleLongPrice: data[0].longLiquidationPrice,
+                sampleShortPrice: data[0].shortLiquidationPrice,
+                samplePrice: data[0].price
+            } : null
+        });
         const min = amountMin && !isNaN(parseFloat(amountMin)) ? parseFloat(amountMin) : 0;
         const max = amountMax && !isNaN(parseFloat(amountMax)) ? parseFloat(amountMax) : Infinity;
         const ratioMin = ratioFilter && !isNaN(parseFloat(ratioFilter)) ? parseFloat(ratioFilter) : null;
@@ -2785,7 +3259,7 @@ export function LiquidationTest() {
             // Use uniform interval aggregation
             setProcessedData(aggregateByPriceInterval(amountFiltered, priceInterval));
         }
-    }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax, smartIntervalEnabled, clusterDensity, minInterval, maxInterval, adaptiveScope, priceRangeMin, priceRangeMax, useFixedIntervalCount, fixedIntervalCount, aggregateByPriceInterval, aggregateByAdaptiveInterval, aggregateByFixedCount]);
+    }, [data, priceInterval, side, amountMin, amountMax, ratioFilter, ratioFilterMax, smartIntervalEnabled, clusterDensity, minInterval, maxInterval, adaptiveScope, priceRangeMin, priceRangeMax, useFixedIntervalCount, fixedIntervalCount, aggregateByPriceInterval, aggregateByAdaptiveInterval, aggregateByFixedCount, liquidationPriceType]);
 
     // Filter data for chart display based on groupBy selection and price range
     const chartData = useMemo(() => {
@@ -3193,6 +3667,42 @@ export function LiquidationTest() {
                                 </button>
                             </div>
                             <p className="text-[10px] text-muted-foreground">Formato dos volumes na dica (tooltip)</p>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Preço para Liquidações</label>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => {
+                                        console.log('[DEBUG] UI: Setting liquidationPriceType to close');
+                                        setLiquidationPriceType('close');
+                                    }}
+                                    className={`flex-1 h-9 rounded-md text-xs font-semibold transition-all ${liquidationPriceType === 'close'
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-muted text-muted-foreground hover:bg-accent'
+                                        }`}
+                                    title="Usa o preço de fechamento (close) para ambos os lados"
+                                >
+                                    Fechamento (Close)
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        console.log('[DEBUG] UI: Setting liquidationPriceType to high_low');
+                                        setLiquidationPriceType('high_low');
+                                    }}
+                                    className={`flex-1 h-9 rounded-md text-xs font-semibold transition-all ${liquidationPriceType === 'high_low'
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-muted text-muted-foreground hover:bg-accent'
+                                        }`}
+                                    title="Usa High para Shorts e Low para Longs - mais preciso para liquidações"
+                                >
+                                    High/Low
+                                </button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                                {liquidationPriceType === 'close'
+                                    ? 'Usa preço de fechamento para todos os cálculos (compatível)'
+                                    : 'Usa Low para Longs e High para Shorts (mais preciso para liquidações)'}
+                            </p>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Agrupar Por</label>
