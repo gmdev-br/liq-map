@@ -14,6 +14,8 @@ import {
   ChartOptions,
   ChartData,
   Chart,
+  BarController,
+  LineController,
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import { Chart as ReactChart } from 'react-chartjs-2';
@@ -41,31 +43,31 @@ const crosshairPlugin = {
     const ctx = chart.ctx;
     const xAxis = chart.scales.x;
     const yAxis = chart.scales.y;
-    
+
     if (!xAxis || !yAxis) return;
 
     // Get the active points
     const activePoints = chart.getActiveElements();
-    
+
     if (activePoints && activePoints.length > 0) {
       const activePoint = activePoints[0];
       const x = xAxis.getPixelForValue(activePoint.index);
-      
+
       ctx.save();
       ctx.beginPath();
       ctx.strokeStyle = 'rgba(128, 128, 128, 0.5)';
       ctx.lineWidth = 1;
       ctx.setLineDash([5, 5]);
-      
+
       // Vertical line (crosshair)
       ctx.moveTo(x, yAxis.top);
       ctx.lineTo(x, yAxis.bottom);
-      
+
       // Horizontal line
       const y = yAxis.getPixelForValue(chart.data.datasets[0].data[activePoint.index] as number);
       ctx.moveTo(xAxis.left, y);
       ctx.lineTo(xAxis.right, y);
-      
+
       ctx.stroke();
       ctx.restore();
     }
@@ -84,6 +86,8 @@ ChartJS.register(
   Tooltip,
   Legend,
   Filler,
+  BarController,
+  LineController,
   zoomPlugin,
   crosshairPlugin
 );
@@ -174,27 +178,6 @@ export function PriceChart({
       const val = item[dataKey as keyof typeof item];
       values.push(typeof val === 'number' ? val : 0);
     }
-
-    return {
-      labels,
-      datasets: [
-        {
-          label: dataKey,
-          data: values,
-          borderColor: color,
-          backgroundColor: type === 'area' ? `${color}33` : type === 'bar' ? color : 'transparent',
-          fill: type === 'area',
-          tension: 0.4,
-          pointRadius: type === 'line' || type === 'area' ? 0 : 4,
-          pointHoverRadius: 6,
-          pointHoverBackgroundColor: color,
-          pointHoverBorderColor: '#fff',
-          pointHoverBorderWidth: 2,
-          borderWidth: type === 'bar' ? 0 : 2,
-          borderRadius: type === 'bar' ? 4 : 0,
-        },
-      ],
-    };
 
     return {
       labels,
