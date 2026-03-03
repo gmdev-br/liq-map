@@ -69,7 +69,7 @@ export const defaultLineStyles: ChartLineStyles = {
 interface LiquidationChartProps {
     data: HistoricalLiquidation[];
     formatCurrency: (value: number) => string;
-    groupBy?: 'none' | 'long' | 'short' | 'combined' | 'stacked';
+    groupBy?: 'none' | 'long' | 'short' | 'combined' | 'stacked' | 'delta';
     currentPrice?: number | null;
     priceInterval: number;
     lineStyles?: ChartLineStyles;
@@ -88,6 +88,14 @@ interface LiquidationChartProps {
     horizontal?: boolean;
     symbol: string;
     tooltipCurrency: 'usd' | 'btc';
+    // Liquidation Zones
+    liquidationZonesEnabled?: boolean;
+    liquidationZonesPercent?: number;
+    liquidationZonesInterval?: number;
+    liquidationZonesColor?: string;
+    liquidationZonesColorByDelta?: boolean;
+    liquidationZonesLongColor?: string;
+    liquidationZonesShortColor?: string;
 }
 
 const LiquidationChart = memo(function LiquidationChart({
@@ -108,6 +116,13 @@ const LiquidationChart = memo(function LiquidationChart({
     horizontal = false,
     symbol,
     tooltipCurrency = 'usd',
+    liquidationZonesEnabled = false,
+    liquidationZonesPercent = 1.0,
+    liquidationZonesInterval = 1000,
+    liquidationZonesColor = '#f59e0b',
+    liquidationZonesColorByDelta = false,
+    liquidationZonesLongColor = '#10b981',
+    liquidationZonesShortColor = '#ef4444',
 }: Omit<LiquidationChartProps, 'formatCurrency'> & { formatCurrency: (v: number) => string }) {
     const chartRef = useRef<ReactECharts>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -155,9 +170,15 @@ const LiquidationChart = memo(function LiquidationChart({
     // Calculate yMax for marker scaling
     const yMax = useMemo(() => {
         if (sortedData.length === 0) return 0;
-        const maxVol = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
+        let maxVol: number;
+        if (groupBy === 'delta') {
+            // For delta mode, use the maximum absolute delta value
+            maxVol = Math.max(...sortedData.map(d => Math.abs(d.long_volume - d.short_volume)));
+        } else {
+            maxVol = Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
+        }
         return Math.max(1, maxVol * 1.1); // Ensure at least 1
-    }, [sortedData]);
+    }, [sortedData, groupBy]);
 
     const labels = useMemo(() => sortedData.map(d => d.price), [sortedData]);
 
@@ -343,6 +364,79 @@ const LiquidationChart = memo(function LiquidationChart({
             if (showSD3) addSD(regions.sd3[0], regions.sd3[1], '#ef4444', 0.04);
         }
 
+        // Liquidation Zones - Boxes around round prices
+        if (liquidationZonesEnabled && sortedData.length > 0) {
+            const minPrice = sortedData[0].price;
+            const maxPrice = sortedData[sortedData.length - 1].price;
+            
+            // Calculate round price multiples within range
+            const firstMultiple = Math.ceil(minPrice / liquidationZonesInterval) * liquidationZonesInterval;
+            const lastMultiple = Math.floor(maxPrice / liquidationZonesInterval) * liquidationZonesInterval;
+            
+            // Calculate total volume for normalization
+            const totalVolume = sortedData.reduce((sum, d) => sum + d.long_volume + d.short_volume, 0);
+            const maxZoneVolume = liquidationZonesInterval * 2; // Approximate max expected per zone
+            
+            for (let roundPrice = firstMultiple; roundPrice <= lastMultiple; roundPrice += liquidationZonesInterval) {
+                // Calculate zone boundaries (±percentage from round price)
+                const zoneMin = roundPrice * (1 - liquidationZonesPercent / 100);
+                const zoneMax = roundPrice * (1 + liquidationZonesPercent / 100);
+                
+                // Aggregate volume and delta within this zone
+                let zoneVolume = 0;
+                let zoneLongVolume = 0;
+                let zoneShortVolume = 0;
+                for (const item of sortedData) {
+                    if (item.price >= zoneMin && item.price <= zoneMax) {
+                        zoneVolume += item.long_volume + item.short_volume;
+                        zoneLongVolume += item.long_volume;
+                        zoneShortVolume += item.short_volume;
+                    }
+                }
+                
+                // Only draw if there's significant volume
+                if (zoneVolume > 0) {
+                    const zoneMinIdx = findClosestLabelIndex(zoneMin);
+                    const zoneMaxIdx = findClosestLabelIndex(zoneMax);
+                    
+                    // Calculate opacity based on volume intensity (0.1 to 0.5)
+                    const intensity = Math.min(zoneVolume / Math.max(maxZoneVolume, totalVolume * 0.05), 1);
+                    const opacity = 0.1 + (intensity * 0.4);
+                    
+                    // Calculate delta for color determination
+                    const zoneDelta = zoneLongVolume - zoneShortVolume;
+                    
+                    // Determine color: by delta if enabled, otherwise use custom color
+                    const zoneColor = liquidationZonesColorByDelta
+                        ? (zoneDelta >= 0 ? liquidationZonesLongColor : liquidationZonesShortColor)
+                        : liquidationZonesColor;
+                    
+                    markAreas.push([{
+                        name: `Zone ${formatCurrency(roundPrice)}`,
+                        xAxis: horizontal ? undefined : zoneMinIdx,
+                        yAxis: horizontal ? zoneMinIdx : undefined,
+                        itemStyle: {
+                            color: zoneColor,
+                            opacity: opacity,
+                            borderWidth: 1,
+                            borderColor: zoneColor
+                        },
+                        label: {
+                            show: true,
+                            position: 'insideTop',
+                            formatter: `${formatCurrency(roundPrice)}\n${(zoneVolume / 1e6).toFixed(1)}M`,
+                            fontSize: 9,
+                            color: '#fff',
+                            fontWeight: 'bold'
+                        }
+                    }, {
+                        xAxis: horizontal ? undefined : zoneMaxIdx,
+                        yAxis: horizontal ? zoneMaxIdx : undefined,
+                    }]);
+                }
+            }
+        }
+
         const series: any[] = groupBy === 'stacked'
             ? [{
                 name: 'Total Volume',
@@ -364,6 +458,45 @@ const LiquidationChart = memo(function LiquidationChart({
                 markLine: markLines.length > 0 ? {
                     symbol: ['none', 'none'],
                     data: markLines,
+                    animation: false
+                } : undefined,
+                markArea: markAreas.length > 0 ? {
+                    silent: true,
+                    data: markAreas,
+                    animation: false
+                } : undefined
+            }]
+            : groupBy === 'delta'
+            ? [{
+                name: 'Delta (Long - Short)',
+                type: 'bar',
+                data: sortedData.map(d => {
+                    const delta = d.long_volume - d.short_volume;
+                    return {
+                        value: Math.abs(delta),
+                        itemStyle: {
+                            color: delta >= 0 ? '#10b981' : '#ef4444',
+                            borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0],
+                            borderWidth: 0
+                        }
+                    };
+                }),
+                barWidth: '40%',
+                barCategoryGap: '40%',
+                emphasis: {
+                    itemStyle: {
+                        shadowBlur: 4,
+                        shadowColor: 'rgba(148, 163, 184, 0.4)'
+                    }
+                },
+                markLine: markLines.length > 0 ? {
+                    symbol: ['none', 'none'],
+                    data: markLines,
+                    animation: false
+                } : undefined,
+                markArea: markAreas.length > 0 ? {
+                    silent: true,
+                    data: markAreas,
                     animation: false
                 } : undefined
             }]
@@ -436,7 +569,7 @@ const LiquidationChart = memo(function LiquidationChart({
         // Create a lookup for price -> volume data
         const priceDataMap = new Map(
             sortedData
-                .filter(d => d.long_volume + d.short_volume > 0)
+                .filter(d => groupBy === 'delta' ? Math.abs(d.long_volume - d.short_volume) > 0 : d.long_volume + d.short_volume > 0)
                 .map(d => [String(d.price), d])
         );
 
@@ -544,27 +677,96 @@ const LiquidationChart = memo(function LiquidationChart({
                         : `Price: ${formatCurrency(d.price)} | ${new Date(d.timestamp * 1000).toLocaleDateString()}`;
 
                     const total = d.long_volume + d.short_volume;
+                    const delta = d.long_volume - d.short_volume;
+                    const isLongDominant = delta >= 0;
+
+                    // Delta mode tooltip
+                    if (groupBy === 'delta') {
+                        let innerHtml = `
+                            <div style="min-width: 220px; font-family: 'Inter', sans-serif; background: #1e293b; color: #f1f5f9; padding: 2px;">
+                                <div style="font-size: 11px; font-weight: 700; color: #94a3b8; margin-bottom: 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.1); padding-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">${title}</div>
+                                
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <span style="color: #10b981; font-weight: 600; font-size: 13px;">▲ Longs:</span>
+                                    <span style="font-weight: 700; font-size: 13px;">${formatTooltipVolume(d.long_volume, d.price)}</span>
+                                </div>
+                                
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                    <span style="color: #ef4444; font-weight: 600; font-size: 13px;">▼ Shorts:</span>
+                                    <span style="font-weight: 700; font-size: 13px;">${formatTooltipVolume(d.short_volume, d.price)}</span>
+                                </div>
+
+                                <div style="background: rgba(15, 23, 42, 0.5); border-radius: 6px; padding: 10px; margin-top: 10px; border: 1px solid rgba(148, 163, 184, 0.1);">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                        <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">DELTA:</span>
+                                        <strong style="color: ${isLongDominant ? '#10b981' : '#ef4444'}; font-size: 13px;">${isLongDominant ? '+' : ''}${formatTooltipVolume(delta, d.price)}</strong>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">DOMINÂNCIA:</span>
+                                        <strong style="color: ${isLongDominant ? '#10b981' : '#ef4444'}; font-size: 13px;">${isLongDominant ? 'LONG' : 'SHORT'}</strong>
+                                    </div>
+                                </div>
+                        `;
+
+                        if (d.symbolVolumes && Object.keys(d.symbolVolumes).length > 1) {
+                            innerHtml += `<div style="margin: 15px 0 8px 0; font-weight: 800; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.1em;">Detalhamento de Ativos</div>`;
+                            innerHtml += `<div class="tooltip-scroll-container" style="max-height: 200px; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.3) transparent;">`;
+
+                            Object.entries(d.symbolVolumes)
+                                .sort(([, a]: any, [, b]: any) => (b.long + b.short) - (a.long + a.short))
+                                .forEach(([symbol, vol]: [string, any]) => {
+                                    const assetTotal = vol.long + vol.short;
+                                    if (assetTotal > 0) {
+                                        const sName = symbol.split('USDT')[0].replace('_PERP.A', '');
+                                        const share = ((assetTotal / total) * 100).toFixed(0);
+                                        const assetDelta = vol.long - vol.short;
+                                        const isAssetLongDominant = assetDelta >= 0;
+
+                                        innerHtml += `
+                                            <div style="margin-bottom: 10px; border-left: 3px solid ${isAssetLongDominant ? '#10b981' : '#ef4444'}; padding-left: 12px;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                                                    <span style="font-weight: 700; color: #f1f5f9; font-size: 12px;">${sName}</span>
+                                                    <span style="font-size: 10px; background: ${isAssetLongDominant ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}; color: ${isAssetLongDominant ? '#34d399' : '#f87171'}; padding: 2px 6px; border-radius: 4px; font-weight: 700;">${share}%</span>
+                                                </div>
+                                                <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; margin-bottom: 4px;">
+                                                    <span>Delta:</span>
+                                                    <span style="color: ${isAssetLongDominant ? '#34d399' : '#f87171'}; font-weight: 600;">${isAssetLongDominant ? '+' : ''}${formatTooltipVolume(assetDelta, d.price)}</span>
+                                                </div>
+                                                <div style="display: flex; gap: 8px; font-size: 10px;">
+                                                    <span style="color: #34d399; background: rgba(52, 211, 153, 0.1); padding: 1px 4px; border-radius: 3px;">▲ ${formatTooltipVolume(vol.long, d.price)}</span>
+                                                    <span style="color: #f87171; background: rgba(248, 113, 113, 0.1); padding: 1px 4px; border-radius: 3px;">▼ ${formatTooltipVolume(vol.short, d.price)}</span>
+                                                </div>
+                                            </div>`;
+                                    }
+                                });
+                            innerHtml += `</div>`;
+                        }
+                        innerHtml += '</div>';
+                        return innerHtml;
+                    }
+
+                    // Standard tooltip for other modes
                     let innerHtml = `
                         <div style="min-width: 220px; font-family: 'Inter', sans-serif; background: #1e293b; color: #f1f5f9; padding: 2px;">
                             <div style="font-size: 11px; font-weight: 700; color: #94a3b8; margin-bottom: 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.1); padding-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">${title}</div>
                             
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                <span style="color: #10b981; font-weight: 600; font-size: 13px;">▲ Longs:</span> 
+                                <span style="color: #10b981; font-weight: 600; font-size: 13px;">▲ Longs:</span>
                                 <span style="font-weight: 700; font-size: 13px;">${formatTooltipVolume(d.long_volume, d.price)}</span>
                             </div>
                             
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <span style="color: #ef4444; font-weight: 600; font-size: 13px;">▼ Shorts:</span> 
+                                <span style="color: #ef4444; font-weight: 600; font-size: 13px;">▼ Shorts:</span>
                                 <span style="font-weight: 700; font-size: 13px;">${formatTooltipVolume(d.short_volume, d.price)}</span>
                             </div>
 
                             <div style="background: rgba(15, 23, 42, 0.5); border-radius: 6px; padding: 10px; margin-top: 10px; border: 1px solid rgba(148, 163, 184, 0.1);">
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">TOTAL LIQ:</span> 
+                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">TOTAL LIQ:</span>
                                     <strong style="color: #3b82f6; font-size: 13px;">${formatTooltipVolume(total, d.price)}</strong>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">L/S RATIO:</span> 
+                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 600;">L/S RATIO:</span>
                                     <strong style="color: #f1f5f9; font-size: 13px;">${d.long_short_ratio.toFixed(2)}</strong>
                                 </div>
                             </div>
@@ -606,7 +808,7 @@ const LiquidationChart = memo(function LiquidationChart({
                 }
             },
             legend: {
-                show: groupBy !== 'stacked',
+                show: groupBy !== 'stacked' && groupBy !== 'delta',
                 top: 0,
                 left: 'center',
                 textStyle: { color: '#64748b' },
@@ -683,7 +885,7 @@ const LiquidationChart = memo(function LiquidationChart({
             ],
             series
         };
-    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval, isInteracting]) as EChartsOption;
+    }, [horizontal, groupBy, labels, sortedData, priceInterval, formatCurrency, formatTooltipVolume, lineStyles, stdDevData, showMeanLine, showSD0_25, showSD0_5, showSD1, showSD2, showSD3, yMax, zoomKeys, currentPrice, gridLineInterval, isInteracting, liquidationZonesEnabled, liquidationZonesPercent, liquidationZonesInterval, liquidationZonesColor, liquidationZonesColorByDelta, liquidationZonesLongColor, liquidationZonesShortColor]) as EChartsOption;
 
     const onEvents = useMemo(() => ({
         datazoom: (params: any) => {
@@ -905,7 +1107,7 @@ export function LiquidationTest() {
     const [amountMin, setAmountMin] = useState<string>(() => localStorage.getItem('liquidation_test_amount_min') || '200');
     const [amountMax, setAmountMax] = useState<string>(() => localStorage.getItem('liquidation_test_amount_max') || '');
     const [side, setSide] = useState<'all' | 'long' | 'short'>(() => (localStorage.getItem('liquidation_test_side') as 'all' | 'long' | 'short') || 'all');
-    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked') || 'combined');
+    const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked' | 'delta'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked' | 'delta') || 'combined');
     const [chartHorizontal, setChartHorizontal] = useState(() => localStorage.getItem('liquidation_test_chart_horizontal') === 'true');
     const [chartHeight, setChartHeight] = useState(() => Number(localStorage.getItem('liquidation_test_chart_height')) || 400);
     const [previewHeight, setPreviewHeight] = useState(chartHeight);
@@ -943,6 +1145,14 @@ export function LiquidationTest() {
         const saved = localStorage.getItem('liquidation_test_normal_dist_scope');
         return saved === 'range' ? 'range' : 'complete';
     });
+    // Liquidation Zones State
+    const [liquidationZonesEnabled, setLiquidationZonesEnabled] = useState(() => localStorage.getItem('liquidation_test_zones_enabled') === 'true');
+    const [liquidationZonesPercent, setLiquidationZonesPercent] = useState(() => Number(localStorage.getItem('liquidation_test_zones_percent')) || 1.0);
+    const [liquidationZonesInterval, setLiquidationZonesInterval] = useState(() => Number(localStorage.getItem('liquidation_test_zones_interval')) || 1000);
+    const [liquidationZonesColor, setLiquidationZonesColor] = useState(() => localStorage.getItem('liquidation_test_zones_color') || '#f59e0b');
+    const [liquidationZonesColorByDelta, setLiquidationZonesColorByDelta] = useState(() => localStorage.getItem('liquidation_test_zones_color_by_delta') === 'true');
+    const [liquidationZonesLongColor, setLiquidationZonesLongColor] = useState(() => localStorage.getItem('liquidation_test_zones_long_color') || '#10b981');
+    const [liquidationZonesShortColor, setLiquidationZonesShortColor] = useState(() => localStorage.getItem('liquidation_test_zones_short_color') || '#ef4444');
     const [clusterDensity, setClusterDensity] = useState(() => {
         const saved = Number(localStorage.getItem('liquidation_test_cluster_density'));
         // Migrate old 1-10 values to 1-100 range, or use default 50
@@ -1178,6 +1388,35 @@ export function LiquidationTest() {
     useEffect(() => {
         localStorage.setItem('liquidation_test_max_interval', String(maxInterval));
     }, [maxInterval]);
+
+    // Liquidation Zones persistence
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_enabled', String(liquidationZonesEnabled));
+    }, [liquidationZonesEnabled]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_percent', String(liquidationZonesPercent));
+    }, [liquidationZonesPercent]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_interval', String(liquidationZonesInterval));
+    }, [liquidationZonesInterval]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_color', liquidationZonesColor);
+    }, [liquidationZonesColor]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_color_by_delta', String(liquidationZonesColorByDelta));
+    }, [liquidationZonesColorByDelta]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_long_color', liquidationZonesLongColor);
+    }, [liquidationZonesLongColor]);
+
+    useEffect(() => {
+        localStorage.setItem('liquidation_test_zones_short_color', liquidationZonesShortColor);
+    }, [liquidationZonesShortColor]);
 
     const handleExportCSV = () => {
         const exportSource = processedData.length > 0 ? processedData : data;
@@ -2562,7 +2801,7 @@ export function LiquidationTest() {
             filteredData = filteredData.filter(item => item.price >= actualMin && item.price <= actualMax);
         }
 
-        if (groupBy === 'none' || groupBy === 'combined' || groupBy === 'stacked') {
+        if (groupBy === 'none' || groupBy === 'combined' || groupBy === 'stacked' || groupBy === 'delta') {
             return filteredData;
         }
         return filteredData.map(item => ({
@@ -2959,7 +3198,7 @@ export function LiquidationTest() {
                             <label className="text-sm font-medium">Agrupar Por</label>
                             <select
                                 value={groupBy}
-                                onChange={(e) => setGroupBy(e.target.value as 'none' | 'long' | 'short' | 'combined' | 'stacked')}
+                                onChange={(e) => setGroupBy(e.target.value as 'none' | 'long' | 'short' | 'combined' | 'stacked' | 'delta')}
                                 className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
                             >
                                 <option value="none">Todos (Long + Short)</option>
@@ -2967,6 +3206,7 @@ export function LiquidationTest() {
                                 <option value="short">Apenas Short</option>
                                 <option value="combined">Combinado (Empilhado)</option>
                                 <option value="stacked">Agrupado (1 Cor)</option>
+                                <option value="delta">Delta (Long - Short)</option>
                             </select>
                         </div>
                         <div className="space-y-2">
@@ -3374,6 +3614,173 @@ export function LiquidationTest() {
                             )}
                         </div>
 
+                        {/* Liquidation Zones Controls */}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <label className="text-sm font-medium">Zonas de Liquidação</label>
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-500 rounded">Novo</span>
+                                </div>
+                                <button
+                                    onClick={() => setLiquidationZonesEnabled(!liquidationZonesEnabled)}
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${liquidationZonesEnabled ? 'bg-amber-500' : 'bg-muted'}`}
+                                >
+                                    <span
+                                        className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${liquidationZonesEnabled ? 'translate-x-6' : 'translate-x-1'}`}
+                                    />
+                                </button>
+                            </div>
+                            {liquidationZonesEnabled && (
+                                <div className="space-y-3 p-3 bg-amber-500/5 rounded-md border border-amber-500/20">
+                                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                                        Desenha caixas coloridas ao redor de
+                                        <span className="text-amber-500 font-medium"> preços redondos</span>.
+                                        O volume de liquidação acumulado dentro de cada zona determina a intensidade da cor.
+                                    </p>
+
+                                    {/* Round Price Interval */}
+                                    <div className="space-y-2 pt-2 border-t border-border/50">
+                                        <label className="text-xs font-medium text-foreground">Intervalo de Preço (múltiplos de):</label>
+                                        <select
+                                            value={liquidationZonesInterval}
+                                            onChange={(e) => setLiquidationZonesInterval(Number(e.target.value))}
+                                            className="w-full h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring"
+                                        >
+                                            <option value={100}>$100</option>
+                                            <option value={500}>$500</option>
+                                            <option value={1000}>$1.000</option>
+                                            <option value={2500}>$2.500</option>
+                                            <option value={5000}>$5.000</option>
+                                            <option value={10000}>$10.000</option>
+                                        </select>
+                                        <p className="text-[10px] text-muted-foreground">
+                                            Caixas serão desenhadas em preços múltiplos deste valor (ex: $67.000, $68.000...)
+                                        </p>
+                                    </div>
+
+                                    {/* Percentage Distance */}
+                                    <div className="space-y-2 pt-2 border-t border-border/50">
+                                        <label className="text-xs font-medium text-foreground">Distância Percentual (±%):</label>
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="number"
+                                                min="0.1"
+                                                max="10"
+                                                step="0.1"
+                                                value={liquidationZonesPercent}
+                                                onChange={(e) => {
+                                                    const value = Number(e.target.value);
+                                                    if (value >= 0.1 && value <= 10) {
+                                                        setLiquidationZonesPercent(value);
+                                                    }
+                                                }}
+                                                className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-amber-500/50 font-mono"
+                                            />
+                                            <span className="text-xs font-medium text-amber-500 w-12 text-right">
+                                                ±{liquidationZonesPercent}%
+                                            </span>
+                                        </div>
+                                        <p className="text-[10px] text-muted-foreground">
+                                            Cada zona se estende ±{liquidationZonesPercent}% ao redor do preço de referência
+                                        </p>
+                                    </div>
+
+                                    {/* Color by Delta Toggle */}
+                                    <div className="space-y-2 pt-2 border-t border-border/50">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-xs font-medium text-foreground">Colorir por Delta (Long - Short):</label>
+                                            <button
+                                                onClick={() => setLiquidationZonesColorByDelta(!liquidationZonesColorByDelta)}
+                                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${liquidationZonesColorByDelta ? 'bg-emerald-500' : 'bg-muted'}`}
+                                            >
+                                                <span
+                                                    className={`inline-block h-3 w-3 transform rounded-full bg-background transition-transform ${liquidationZonesColorByDelta ? 'translate-x-5' : 'translate-x-1'}`}
+                                                />
+                                            </button>
+                                        </div>
+                                        <p className="text-[10px] text-muted-foreground">
+                                            {liquidationZonesColorByDelta
+                                                ? 'Personalize as cores para Long (Delta+) e Short (Delta-)'
+                                                : 'Use uma cor personalizada para todas as zonas'}
+                                        </p>
+                                    </div>
+
+                                    {/* Color Pickers - Show different pickers based on color by delta mode */}
+                                    {liquidationZonesColorByDelta ? (
+                                        // Two color pickers when coloring by delta
+                                        <div className="space-y-3 pt-2 border-t border-border/50">
+                                            <div className="grid grid-cols-2 gap-3">
+                                                {/* Long Color Picker */}
+                                                <div className="space-y-1.5">
+                                                    <label className="text-xs font-medium text-foreground">Cor Long (Delta+):</label>
+                                                    <div className="flex items-center gap-2">
+                                                        <input
+                                                            type="color"
+                                                            value={liquidationZonesLongColor}
+                                                            onChange={(e) => setLiquidationZonesLongColor(e.target.value)}
+                                                            className="w-8 h-7 rounded cursor-pointer border border-input bg-background"
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            value={liquidationZonesLongColor}
+                                                            onChange={(e) => setLiquidationZonesLongColor(e.target.value)}
+                                                            className="flex-1 h-7 rounded-md border border-input bg-background px-2 text-[10px] outline-none focus:ring-2 focus:ring-ring font-mono"
+                                                            placeholder="#10b981"
+                                                        />
+                                                    </div>
+                                                </div>
+                                                {/* Short Color Picker */}
+                                                <div className="space-y-1.5">
+                                                    <label className="text-xs font-medium text-foreground">Cor Short (Delta-):</label>
+                                                    <div className="flex items-center gap-2">
+                                                        <input
+                                                            type="color"
+                                                            value={liquidationZonesShortColor}
+                                                            onChange={(e) => setLiquidationZonesShortColor(e.target.value)}
+                                                            className="w-8 h-7 rounded cursor-pointer border border-input bg-background"
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            value={liquidationZonesShortColor}
+                                                            onChange={(e) => setLiquidationZonesShortColor(e.target.value)}
+                                                            className="flex-1 h-7 rounded-md border border-input bg-background px-2 text-[10px] outline-none focus:ring-2 focus:ring-ring font-mono"
+                                                            placeholder="#ef4444"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <p className="text-[10px] text-muted-foreground">
+                                                As cores serão aplicadas com intensidade proporcional ao volume acumulado
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        // Single color picker when not coloring by delta
+                                        <div className="space-y-2 pt-2 border-t border-border/50">
+                                            <label className="text-xs font-medium text-foreground">Cor Base:</label>
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="color"
+                                                    value={liquidationZonesColor}
+                                                    onChange={(e) => setLiquidationZonesColor(e.target.value)}
+                                                    className="w-10 h-8 rounded cursor-pointer border border-input bg-background"
+                                                />
+                                                <input
+                                                    type="text"
+                                                    value={liquidationZonesColor}
+                                                    onChange={(e) => setLiquidationZonesColor(e.target.value)}
+                                                    className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring font-mono"
+                                                    placeholder="#f59e0b"
+                                                />
+                                            </div>
+                                            <p className="text-[10px] text-muted-foreground">
+                                                A cor será aplicada com intensidade proporcional ao volume acumulado
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         {/* Fixed Interval Count Controls */}
                         <div className="space-y-3">
                             <div className="flex items-center justify-between">
@@ -3675,6 +4082,13 @@ export function LiquidationTest() {
                                     horizontal={chartHorizontal}
                                     symbol={symbol}
                                     tooltipCurrency={tooltipCurrency}
+                                    liquidationZonesEnabled={liquidationZonesEnabled}
+                                    liquidationZonesPercent={liquidationZonesPercent}
+                                    liquidationZonesInterval={liquidationZonesInterval}
+                                    liquidationZonesColor={liquidationZonesColor}
+                                    liquidationZonesColorByDelta={liquidationZonesColorByDelta}
+                                    liquidationZonesLongColor={liquidationZonesLongColor}
+                                    liquidationZonesShortColor={liquidationZonesShortColor}
                                 />
                             </CardContent>
 
