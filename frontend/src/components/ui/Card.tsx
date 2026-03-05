@@ -10,8 +10,8 @@ export function Card({ children, className, variant = 'glass' }: CardProps) {
   const variants = {
     default: 'rounded-xl border border-border bg-card shadow-sm',
     glass: 'glass-card',
-    gradient: 'glass-card bg-gradient-to-br from-blue-500/10 via-purple-500/10 to-pink-500/10',
-    glow: 'glass-card glow-blue',
+    gradient: 'glass-card border-blue-500/20',
+    glow: 'glass-card border-blue-500/20 shadow-glow',
   };
 
   return (
@@ -30,9 +30,9 @@ interface CardHeaderProps {
 
 export function CardHeader({ title, description, action, className }: CardHeaderProps) {
   return (
-    <div className={clsx('flex items-center justify-between border-b border-white/10 px-6 py-4', className)}>
+    <div className={clsx('flex items-center justify-between border-b border-white/10 px-5 py-3', className)}>
       <div>
-        <h3 className="text-lg font-semibold text-gradient">{title}</h3>
+        <h3 className="text-base font-semibold text-gradient">{title}</h3>
         {description && (
           <p className="text-sm text-white/60">{description}</p>
         )}
@@ -48,7 +48,7 @@ interface CardContentProps {
 }
 
 export function CardContent({ children, className }: CardContentProps) {
-  return <div className={clsx('p-6', className)}>{children}</div>;
+  return <div className={clsx('p-5', className)}>{children}</div>;
 }
 
 interface CardFooterProps {
@@ -58,7 +58,7 @@ interface CardFooterProps {
 
 export function CardFooter({ children, className }: CardFooterProps) {
   return (
-    <div className={clsx('border-t border-white/10 px-6 py-4', className)}>
+    <div className={clsx('border-t border-white/10 px-5 py-3', className)}>
       {children}
     </div>
   );
@@ -82,11 +82,11 @@ export function StatCard({ title, value, change, changeType = 'neutral', icon, c
   };
 
   return (
-    <div className={clsx('glass-card p-5', className)}>
+    <div className={clsx('glass-card p-4', className)}>
       <div className="flex items-start justify-between">
-        <div className="space-y-2">
+        <div className="space-y-1">
           <p className="text-sm text-white/60">{title}</p>
-          <p className="text-2xl font-bold text-white">{value}</p>
+          <p className="text-xl font-bold text-white">{value}</p>
           {change && (
             <p className={clsx('text-sm font-medium', changeColors[changeType])}>
               {change}
@@ -94,7 +94,7 @@ export function StatCard({ title, value, change, changeType = 'neutral', icon, c
           )}
         </div>
         {icon && (
-          <div className="flex h-10 w-10 items-center justify-center rounded-liquid-sm bg-gradient-to-br from-blue-500/20 to-purple-500/20 text-blue-400">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/20 text-blue-400">
             {icon}
           </div>
         )}
@@ -115,13 +115,13 @@ export function Badge({ children, variant = 'default', className }: BadgeProps) 
     default: 'bg-white/10 text-white/80 border-white/20',
     success: 'glass-badge-green',
     danger: 'glass-badge-red',
-    warning: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    warning: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25',
     info: 'glass-badge-blue',
   };
 
   return (
     <span className={clsx(
-      'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium backdrop-blur-sm border',
+      'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border',
       variants[variant],
       className
     )}>
