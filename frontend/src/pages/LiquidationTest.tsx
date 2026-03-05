@@ -88,6 +88,10 @@ interface LiquidationChartProps {
     liquidationZonesColorByDelta?: boolean;
     liquidationZonesLongColor?: string;
     liquidationZonesShortColor?: string;
+    showDelta?: boolean;
+    showProjectionLines?: boolean;
+    showProjectionBars?: boolean;
+    projectionOffset?: number;
 }
 
 const LiquidationChart = memo(function LiquidationChart({
@@ -98,6 +102,7 @@ const LiquidationChart = memo(function LiquidationChart({
     liquidationZonesEnabled = false, liquidationZonesPercent = 1.0, liquidationZonesInterval = 1000,
     liquidationZonesColor = '#f59e0b', liquidationZonesColorByDelta = false,
     liquidationZonesLongColor = '#10b981', liquidationZonesShortColor = '#ef4444',
+    showDelta = true, showProjectionLines = false, showProjectionBars = false, projectionOffset = 100,
 }: Omit<LiquidationChartProps, 'formatCurrency'> & { formatCurrency: (v: number) => string }) {
     const chartRef = useRef<ReactECharts>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -137,17 +142,37 @@ const LiquidationChart = memo(function LiquidationChart({
 
     useEffect(() => () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); }, []);
 
-    const sortedData = useMemo(() => [...data].sort((a, b) => a.price - b.price), [data]);
+    const sortedData = useMemo(() => {
+        const sorted = [...data].sort((a, b) => a.price - b.price);
+        if (sorted.length > 0) {
+            console.log('[DEBUG] sortedData - count:', sorted.length,
+                'priceRange:', sorted[0].price, 'to', sorted[sorted.length-1].price,
+                'sample:', sorted[0]);
+        }
+        return sorted;
+    }, [data]);
 
     const yMax = useMemo(() => {
         if (sortedData.length === 0) return 0;
-        const maxVol = groupBy === 'delta'
+        let maxVol = groupBy === 'delta'
             ? Math.max(...sortedData.map(d => Math.abs(d.long_volume - d.short_volume)))
             : Math.max(...sortedData.map(d => d.long_volume + d.short_volume));
+        
+        // Include projection volumes in yMax calculation
+        if (showProjectionLines || showProjectionBars) {
+            const maxShortVol = Math.max(...sortedData.map(d => d.short_volume), 0);
+            const maxLongVol = Math.max(...sortedData.map(d => d.long_volume), 0);
+            maxVol = Math.max(maxVol, maxShortVol, maxLongVol);
+        }
+        
         return Math.max(1, maxVol * 1.1);
-    }, [sortedData, groupBy]);
+    }, [sortedData, groupBy, showProjectionLines, showProjectionBars]);
 
-    const labels = useMemo(() => sortedData.map(d => d.price), [sortedData]);
+    const labels = useMemo(() => {
+        const lbls = sortedData.map(d => d.price);
+        console.log('[DEBUG] Labels created - count:', lbls.length, 'range:', lbls[0], 'to', lbls[lbls.length - 1]);
+        return lbls;
+    }, [sortedData]);
 
     const formatTooltipVolume = useCallback((value: number, referencePrice: number) => {
         if (tooltipCurrency === 'btc') {
@@ -331,38 +356,282 @@ const LiquidationChart = memo(function LiquidationChart({
 
     // OPTIMIZATION 5: Separate useMemo for series data - markLine/markArea ONLY on first series
     const series = useMemo(() => {
+        console.log('[DEBUG] series useMemo called - showDelta:', showDelta, 'showProjectionLines:', showProjectionLines, 'showProjectionBars:', showProjectionBars, 'projectionOffset:', projectionOffset);
+        console.log('[DEBUG] sortedData length:', sortedData.length);
+        
         const hasMarkLines = markLines.length > 0;
         const hasMarkAreas = markAreas.length > 0;
 
-        const baseSeries: any[] = groupBy === 'stacked'
-            ? [{ name: 'Total Volume', type: 'bar', data: sortedData.map(d => d.long_volume + d.short_volume), barWidth: '40%', barCategoryGap: '40%', itemStyle: { color: '#3b82f6', borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 }, emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(59, 130, 246, 0.4)' } } }]
-            : groupBy === 'delta'
-            ? [{ name: 'Delta (Long - Short)', type: 'bar', data: sortedData.map(d => {
-                const delta = d.long_volume - d.short_volume;
-                const hasOnlyShort = d.short_volume > 0 && d.long_volume === 0;
-                const hasOnlyLong = d.long_volume > 0 && d.short_volume === 0;
-                let color;
-                if (hasOnlyShort) {
-                  color = '#d946ef'; // fuchsia
-                } else if (hasOnlyLong) {
-                  color = '#facc15'; // yellow
-                } else {
-                  color = delta >= 0 ? '#10b981' : '#ef4444';
+        // Helper to find closest label index for a given price
+        const findClosestLabelIndex = (targetPrice: number): number => {
+            if (labels.length === 0) return 0;
+            let left = 0, right = labels.length - 1, closestIdx = 0;
+            let minDiff = Math.abs(labels[0] - targetPrice);
+            while (left <= right) {
+                const mid = Math.floor((left + right) / 2);
+                const diff = Math.abs(labels[mid] - targetPrice);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestIdx = mid;
                 }
-                return { value: Math.abs(delta), itemStyle: { color, borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 } };
-              }), barWidth: '40%', barCategoryGap: '40%', emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(148, 163, 184, 0.4)' } } }]
-            : [{ name: 'Longs', type: 'bar', data: sortedData.map(d => d.long_volume), barWidth: '40%', barGap: '10%', itemStyle: { color: '#10b981', borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 }, emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(16, 185, 129, 0.4)' } }, stack: groupBy === 'combined' ? 'total' : undefined }, { name: 'Shorts', type: 'bar', data: sortedData.map(d => d.short_volume), barWidth: '40%', barGap: '10%', itemStyle: { color: '#ef4444', borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 }, emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(239, 68, 68, 0.4)' } }, stack: groupBy === 'combined' ? 'total' : undefined }];
+                if (labels[mid] < targetPrice) left = mid + 1;
+                else if (labels[mid] > targetPrice) right = mid - 1;
+                else return mid;
+            }
+            // Check neighbors for closer match
+            if (closestIdx > 0 && Math.abs(labels[closestIdx - 1] - targetPrice) < minDiff) closestIdx--;
+            if (closestIdx < labels.length - 1 && Math.abs(labels[closestIdx + 1] - targetPrice) < Math.abs(labels[closestIdx] - targetPrice)) closestIdx++;
+            return closestIdx;
+        };
+
+        // Calculate projection data based on liquidation prices
+        let projectionData: { shortProjections: any[]; longProjections: any[] } | null = null;
+        if (showProjectionLines || showProjectionBars) {
+            // Calculate short projections (liquidation price + offset, i.e., above)
+            const shortProjections = sortedData
+                .filter(d => d.short_volume > 0)
+                .map(d => ({
+                    price: d.price + projectionOffset,
+                    volume: d.short_volume,
+                    originalPrice: d.price
+                }));
+
+            // Calculate long projections (liquidation price - offset, i.e., below)
+            const longProjections = sortedData
+                .filter(d => d.long_volume > 0)
+                .map(d => ({
+                    price: d.price - projectionOffset,
+                    volume: d.long_volume,
+                    originalPrice: d.price
+                }));
+
+            projectionData = { shortProjections, longProjections };
+            console.log('[DEBUG] Projection data calculated:', {
+                shortProjections: shortProjections.length,
+                longProjections: longProjections.length,
+                projectionType: showProjectionBars ? 'bars' : 'lines',
+                sampleShort: shortProjections[0],
+                sampleLong: longProjections[0]
+            });
+        } else {
+            console.log('[DEBUG] No projection mode active, skipping projection calculation');
+        }
+
+        let baseSeries: any[] = [];
+        console.log('[DEBUG] Creating series - showDelta:', showDelta, 'showProjectionLines:', showProjectionLines, 'showProjectionBars:', showProjectionBars);
+
+        // Add delta bars if showDelta is true
+        if (showDelta) {
+            const deltaSeries = groupBy === 'stacked'
+                ? [{ name: 'Total Volume', type: 'bar', data: sortedData.map(d => d.long_volume + d.short_volume), barWidth: '40%', barCategoryGap: '40%', itemStyle: { color: '#3b82f6', borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 }, emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(59, 130, 246, 0.4)' } } }]
+                : groupBy === 'delta'
+                ? [{ name: 'Delta (Long - Short)', type: 'bar', data: sortedData.map(d => {
+                    const delta = d.long_volume - d.short_volume;
+                    const hasOnlyShort = d.short_volume > 0 && d.long_volume === 0;
+                    const hasOnlyLong = d.long_volume > 0 && d.short_volume === 0;
+                    let color;
+                    if (hasOnlyShort) {
+                      color = '#d946ef'; // fuchsia
+                    } else if (hasOnlyLong) {
+                      color = '#facc15'; // yellow
+                    } else {
+                      color = delta >= 0 ? '#10b981' : '#ef4444';
+                    }
+                    return { value: Math.abs(delta), itemStyle: { color, borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 } };
+                  }), barWidth: '40%', barCategoryGap: '40%', emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(148, 163, 184, 0.4)' } } }]
+                : [{ name: 'Longs', type: 'bar', data: sortedData.map(d => d.long_volume), barWidth: '40%', barGap: '10%', itemStyle: { color: '#10b981', borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 }, emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(16, 185, 129, 0.4)' } }, stack: groupBy === 'combined' ? 'total' : undefined }, { name: 'Shorts', type: 'bar', data: sortedData.map(d => d.short_volume), barWidth: '40%', barGap: '10%', itemStyle: { color: '#ef4444', borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0], borderWidth: 0 }, emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(239, 68, 68, 0.4)' } }, stack: groupBy === 'combined' ? 'total' : undefined }];
+            baseSeries = deltaSeries;
+        }
+
+        // Add projection series if showProjectionLines or showProjectionBars is true
+        console.log('[DEBUG] Checking projection condition - showProjectionLines:', showProjectionLines, 'showProjectionBars:', showProjectionBars, 'has projectionData:', !!projectionData);
+        if ((showProjectionLines || showProjectionBars) && projectionData) {
+            const { shortProjections, longProjections } = projectionData;
+            console.log('[DEBUG] Adding projection series - short:', shortProjections.length, 'long:', longProjections.length, 'type:', showProjectionBars ? 'bars' : 'lines');
+
+            // Short projections (orange) - map to category indices
+            if (shortProjections.length > 0) {
+                // Create a map of index -> volume for projections
+                const projectionMap = new Map<number, number>();
+                shortProjections.forEach(d => {
+                    const idx = findClosestLabelIndex(d.price);
+                    const currentVol = projectionMap.get(idx) || 0;
+                    projectionMap.set(idx, currentVol + d.volume);
+                });
+
+                // Create full array aligned with categories (null where no projection)
+                const projectionDataArray = new Array(labels.length).fill(null);
+                projectionMap.forEach((volume, idx) => {
+                    if (idx >= 0 && idx < projectionDataArray.length) {
+                        projectionDataArray[idx] = volume;
+                    }
+                });
+
+                console.log('[DEBUG] Short projection mapping:', {
+                    totalProjections: shortProjections.length,
+                    uniqueIndices: projectionMap.size,
+                    labelsLength: labels.length,
+                    nonNullCount: projectionDataArray.filter(v => v !== null).length,
+                    sampleIndices: Array.from(projectionMap.keys()).slice(0, 5)
+                });
+
+                if (showProjectionBars) {
+                    // Bar projection with enhanced visibility - improved styling
+                    baseSeries.push({
+                        name: 'Projeção Short',
+                        type: 'bar',
+                        data: projectionDataArray.map(v => v !== null ? { value: v, itemStyle: { opacity: 0.85 } } : null),
+                        barWidth: '30%',
+                        barGap: '20%',
+                        itemStyle: {
+                            color: '#f97316', // orange-500
+                            borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0],
+                            borderWidth: 2,
+                            borderType: 'dashed',
+                            borderColor: '#fdba74', // lighter orange for border
+                            opacity: 0.85,
+                            shadowBlur: 4,
+                            shadowColor: 'rgba(249, 115, 22, 0.4)'
+                        },
+                        emphasis: {
+                            itemStyle: {
+                                opacity: 1,
+                                shadowBlur: 8,
+                                shadowColor: 'rgba(249, 115, 22, 0.6)',
+                                borderWidth: 3
+                            }
+                        },
+                        z: 10
+                    });
+                }
+                
+                if (showProjectionLines) {
+                    // Line projection (dashed)
+                    baseSeries.push({
+                        name: 'Projeção Short (Linha)',
+                        type: 'line',
+                        data: projectionDataArray,
+                        smooth: true,
+                        symbol: 'circle',
+                        symbolSize: 4,
+                        connectNulls: true,
+                        lineStyle: {
+                            color: '#f97316', // orange-500
+                            width: 3,
+                            type: 'dashed'
+                        },
+                        itemStyle: {
+                            color: '#f97316'
+                        },
+                        emphasis: {
+                            focus: 'series',
+                            lineStyle: {
+                                width: 4
+                            }
+                        },
+                        z: 10 // Ensure projections are on top
+                    });
+                }
+            }
+
+            // Long projections (light blue) - map to category indices
+            if (longProjections.length > 0) {
+                // Create a map of index -> volume for projections
+                const projectionMap = new Map<number, number>();
+                longProjections.forEach(d => {
+                    const idx = findClosestLabelIndex(d.price);
+                    const currentVol = projectionMap.get(idx) || 0;
+                    projectionMap.set(idx, currentVol + d.volume);
+                });
+
+                // Create full array aligned with categories (null where no projection)
+                const projectionDataArray = new Array(labels.length).fill(null);
+                projectionMap.forEach((volume, idx) => {
+                    if (idx >= 0 && idx < projectionDataArray.length) {
+                        projectionDataArray[idx] = volume;
+                    }
+                });
+
+                console.log('[DEBUG] Long projection mapping:', {
+                    totalProjections: longProjections.length,
+                    uniqueIndices: projectionMap.size,
+                    labelsLength: labels.length,
+                    nonNullCount: projectionDataArray.filter(v => v !== null).length,
+                    sampleIndices: Array.from(projectionMap.keys()).slice(0, 5)
+                });
+
+                if (showProjectionBars) {
+                    // Bar projection with enhanced visibility - improved styling
+                    baseSeries.push({
+                        name: 'Projeção Long',
+                        type: 'bar',
+                        data: projectionDataArray.map(v => v !== null ? { value: v, itemStyle: { opacity: 0.85 } } : null),
+                        barWidth: '30%',
+                        barGap: '20%',
+                        itemStyle: {
+                            color: '#38bdf8', // sky-400
+                            borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0],
+                            borderWidth: 2,
+                            borderType: 'dashed',
+                            borderColor: '#7dd3fc', // lighter blue for border
+                            opacity: 0.85,
+                            shadowBlur: 4,
+                            shadowColor: 'rgba(56, 189, 248, 0.4)'
+                        },
+                        emphasis: {
+                            itemStyle: {
+                                opacity: 1,
+                                shadowBlur: 8,
+                                shadowColor: 'rgba(56, 189, 248, 0.6)',
+                                borderWidth: 3
+                            }
+                        },
+                        z: 10
+                    });
+                }
+                
+                if (showProjectionLines) {
+                    // Line projection (dashed)
+                    baseSeries.push({
+                        name: 'Projeção Long (Linha)',
+                        type: 'line',
+                        data: projectionDataArray,
+                        smooth: true,
+                        symbol: 'circle',
+                        symbolSize: 4,
+                        connectNulls: true,
+                        lineStyle: {
+                            color: '#38bdf8', // sky-400
+                            width: 3,
+                            type: 'dashed'
+                        },
+                        itemStyle: {
+                            color: '#38bdf8'
+                        },
+                        emphasis: {
+                            focus: 'series',
+                            lineStyle: {
+                                width: 4
+                            }
+                        },
+                        z: 10 // Ensure projections are on top
+                    });
+                }
+            }
+        }
 
         // OPTIMIZATION: Only add markLine/markArea to the FIRST series
-        if (hasMarkLines || hasMarkAreas) {
+        if ((hasMarkLines || hasMarkAreas) && baseSeries.length > 0) {
             baseSeries[0].markLine = hasMarkLines ? { symbol: ['none', 'none'], data: markLines, silent: true, animation: false } : undefined;
             baseSeries[0].markArea = hasMarkAreas ? { silent: true, data: markAreas, animation: false } : undefined;
         }
+        console.log('[DEBUG] Final baseSeries count:', baseSeries.length, 'series names:', baseSeries.map(s => s.name));
         return baseSeries;
-    }, [sortedData, groupBy, horizontal, markLines, markAreas]);
+    }, [sortedData, groupBy, horizontal, markLines, markAreas, showDelta, showProjectionLines, showProjectionBars, projectionOffset, labels]);
 
     // OPTIMIZATION 6: Simplified option useMemo using pre-computed values
     const option = useMemo(() => {
+        console.log('[DEBUG] Building chart option - series count:', series.length);
         const savedStart = localStorage.getItem(zoomKeys.start);
         const savedEnd = localStorage.getItem(zoomKeys.end);
         const priceDataMap = new Map(sortedData.filter(d => groupBy === 'delta' ? Math.abs(d.long_volume - d.short_volume) > 0 : d.long_volume + d.short_volume > 0).map(d => [String(d.price), d]));
@@ -373,7 +642,7 @@ const LiquidationChart = memo(function LiquidationChart({
         return {
             grid: { top: 40, right: 20, bottom: 20, left: horizontal ? 90 : 60, containLabel: true },
             tooltip: { show: true, trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: '#1e293b', color: '#f1f5f9', formatter: (params: any) => params.axisDimension === (horizontal ? 'y' : 'x') ? formatCurrency(Number(params.value)) : params.value.toLocaleString() } }, backgroundColor: '#1e293b', borderColor: 'rgba(71, 85, 105, 0.2)', borderWidth: 1, padding: 12, textStyle: { color: '#f8fafc', fontFamily: 'Inter, sans-serif' }, formatter: tooltipFormatter },
-            legend: { show: groupBy !== 'stacked' && groupBy !== 'delta', top: 0, left: 'center', textStyle: { color: '#64748b' }, icon: 'circle' },
+            legend: { show: groupBy !== 'stacked' && groupBy !== 'delta' || showProjectionLines || showProjectionBars, top: 0, left: 'center', textStyle: { color: '#64748b' }, icon: 'circle' },
             toolbox: { show: true, right: 20, top: 0, feature: { brush: { type: ['rect', 'clear'], title: { rect: 'Seleção', clear: 'Limpar Seleção' } }, dataView: { show: true, readOnly: true, title: 'Ver Dados', lang: ['Visualização de Dados', 'Fechar', 'Atualizar'] }, saveAsImage: { show: true, title: 'Salvar Imagem', type: 'png' }, restore: { show: true, title: 'Reset' } }, iconStyle: { borderColor: '#64748b' } },
             brush: { toolbox: ['rect', 'clear'], xAxisIndex: horizontal ? undefined : 0, yAxisIndex: horizontal ? 0 : undefined, brushStyle: { borderWidth: 1, color: 'rgba(59, 130, 246, 0.2)', borderColor: 'rgba(59, 130, 246, 0.5)' } },
             visualMap: { show: false, min: 0, max: yMax, dimension: horizontal ? 0 : 1, inRange: { colorAlpha: [0.7, 1] } },
@@ -487,6 +756,41 @@ export function LiquidationTest() {
     const [amountMax, setAmountMax] = useState<string>(() => localStorage.getItem('liquidation_test_amount_max') || '');
     const [side, setSide] = useState<'all' | 'long' | 'short'>(() => (localStorage.getItem('liquidation_test_side') as 'all' | 'long' | 'short') || 'all');
     const [groupBy, setGroupBy] = useState<'none' | 'long' | 'short' | 'combined' | 'stacked' | 'delta'>(() => (localStorage.getItem('liquidation_test_group_by') as 'none' | 'long' | 'short' | 'combined' | 'stacked' | 'delta') || 'combined');
+    
+    // View mode states - 3 independent booleans
+    const [showDelta, setShowDelta] = useState<boolean>(() => {
+        const saved = localStorage.getItem('liquidation_test_show_delta');
+        if (saved !== null) return saved === 'true';
+        // Backward compatibility: if old view_mode exists, migrate it
+        const oldViewMode = localStorage.getItem('liquidation_test_view_mode');
+        if (oldViewMode) {
+            return oldViewMode === 'delta' || oldViewMode === 'both';
+        }
+        return true; // Default to showing delta
+    });
+    const [showProjectionLines, setShowProjectionLines] = useState<boolean>(() => {
+        const saved = localStorage.getItem('liquidation_test_show_projection_lines');
+        if (saved !== null) return saved === 'true';
+        // Backward compatibility
+        const oldViewMode = localStorage.getItem('liquidation_test_view_mode');
+        if (oldViewMode) {
+            return oldViewMode === 'projectionLines';
+        }
+        return false;
+    });
+    const [showProjectionBars, setShowProjectionBars] = useState<boolean>(() => {
+        const saved = localStorage.getItem('liquidation_test_show_projection_bars');
+        if (saved !== null) return saved === 'true';
+        // Backward compatibility
+        const oldViewMode = localStorage.getItem('liquidation_test_view_mode');
+        if (oldViewMode) {
+            return oldViewMode === 'projectionBars' || oldViewMode === 'both';
+        }
+        return false;
+    });
+    
+    const [projectionOffset, setProjectionOffset] = useState(() => Number(localStorage.getItem('liquidation_test_projection_offset')) || 100);
+    const [projectionOffsetInput, setProjectionOffsetInput] = useState(projectionOffset.toString());
     const [chartHorizontal, setChartHorizontal] = useState(() => localStorage.getItem('liquidation_test_chart_horizontal') === 'true');
     const [chartHeight, setChartHeight] = useState(() => Number(localStorage.getItem('liquidation_test_chart_height')) || 400);
     const [previewHeight, setPreviewHeight] = useState(chartHeight);
@@ -552,6 +856,13 @@ export function LiquidationTest() {
     // Persistence effects
     useEffect(() => { localStorage.setItem('liquidation_test_line_styles', JSON.stringify(lineStyles)); localStorage.setItem('coinalyze_api_key', apiKey); localStorage.setItem('liquidation_test_multi_asset', String(isMultiAssetMode)); localStorage.setItem('liquidation_test_symbol', symbol); localStorage.setItem('liquidation_test_selected_symbols', JSON.stringify(selectedSymbols)); localStorage.setItem('liquidation_test_tooltip_currency', tooltipCurrency); localStorage.setItem('liquidation_test_price_type', liquidationPriceType); }, [lineStyles, apiKey, isMultiAssetMode, symbol, selectedSymbols, tooltipCurrency, liquidationPriceType]);
 
+    // Fallback: ensure at least Delta is shown when none are selected
+    useEffect(() => {
+        if (!showDelta && !showProjectionLines && !showProjectionBars) {
+            setShowDelta(true);
+        }
+    }, [showDelta, showProjectionLines, showProjectionBars]);
+
     const filteredSymbols = useMemo(() => availableSymbols.filter(s => s.name.toLowerCase().includes(symbolSearch.toLowerCase()) || s.symbol.toLowerCase().includes(symbolSearch.toLowerCase())), [availableSymbols, symbolSearch]);
     const currentSymbolData = useMemo(() => availableSymbols.find(s => s.symbol === symbol) || { symbol, name: symbol, baseAsset: symbol.split('USDT')[0] }, [availableSymbols, symbol]);
 
@@ -561,6 +872,14 @@ export function LiquidationTest() {
     useEffect(() => { localStorage.setItem('liquidation_test_amount_max', amountMax); }, [amountMax]);
     useEffect(() => { localStorage.setItem('liquidation_test_side', side); }, [side]);
     useEffect(() => { localStorage.setItem('liquidation_test_group_by', groupBy); }, [groupBy]);
+    // New persistence for independent view modes
+    useEffect(() => { localStorage.setItem('liquidation_test_show_delta', String(showDelta)); }, [showDelta]);
+    useEffect(() => { localStorage.setItem('liquidation_test_show_projection_lines', String(showProjectionLines)); }, [showProjectionLines]);
+    useEffect(() => { localStorage.setItem('liquidation_test_show_projection_bars', String(showProjectionBars)); }, [showProjectionBars]);
+    // Remove old view_mode from localStorage to clean up
+    useEffect(() => { localStorage.removeItem('liquidation_test_view_mode'); }, []);
+    useEffect(() => { localStorage.setItem('liquidation_test_projection_offset', String(projectionOffset)); }, [projectionOffset]);
+    useEffect(() => { setProjectionOffsetInput(projectionOffset.toString()); }, [projectionOffset]);
     useEffect(() => { localStorage.setItem('liquidation_test_chart_horizontal', String(chartHorizontal)); }, [chartHorizontal]);
     useEffect(() => { localStorage.setItem('liquidation_test_chart_height', String(chartHeight)); }, [chartHeight]);
 
@@ -1114,6 +1433,106 @@ export function LiquidationTest() {
                                 <option value="delta">Delta</option>
                             </select>
                         </div>
+
+                        {/* View Mode - Independent Toggles */}
+                        <div className="space-y-3">
+                            <label className="text-sm font-medium text-slate-300">Exibir:</label>
+                            <div className="flex flex-wrap gap-3">
+                                {/* Delta Toggle */}
+                                <button
+                                    onClick={() => setShowDelta(!showDelta)}
+                                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors rounded-lg border ${
+                                        showDelta
+                                            ? 'bg-blue-600/20 border-blue-500 text-blue-400'
+                                            : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                                    }`}
+                                    title="Mostrar barras de liquidação (Delta)"
+                                >
+                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                                        showDelta ? 'bg-blue-500 border-blue-500' : 'border-slate-500'
+                                    }`}>
+                                        {showDelta && <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                                    </div>
+                                    Delta
+                                </button>
+
+                                {/* Projection Lines Toggle */}
+                                <button
+                                    onClick={() => setShowProjectionLines(!showProjectionLines)}
+                                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors rounded-lg border ${
+                                        showProjectionLines
+                                            ? 'bg-orange-600/20 border-orange-500 text-orange-400'
+                                            : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                                    }`}
+                                    title="Mostrar linhas pontilhadas de projeções"
+                                >
+                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                                        showProjectionLines ? 'bg-orange-500 border-orange-500' : 'border-slate-500'
+                                    }`}>
+                                        {showProjectionLines && <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                                    </div>
+                                    Projeção Linhas
+                                </button>
+
+                                {/* Projection Bars Toggle */}
+                                <button
+                                    onClick={() => setShowProjectionBars(!showProjectionBars)}
+                                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors rounded-lg border ${
+                                        showProjectionBars
+                                            ? 'bg-cyan-600/20 border-cyan-500 text-cyan-400'
+                                            : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                                    }`}
+                                    title="Mostrar barras pontilhadas de projeções"
+                                >
+                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                                        showProjectionBars ? 'bg-cyan-500 border-cyan-500' : 'border-slate-500'
+                                    }`}>
+                                        {showProjectionBars && <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                                    </div>
+                                    Projeção Barras
+                                </button>
+                            </div>
+
+                            {/* Projection Offset Input */}
+                            {(showProjectionLines || showProjectionBars) && (
+                                <div className="flex items-center gap-3 pt-2">
+                                    <label className="text-xs font-medium text-slate-400 whitespace-nowrap">Distância Projeção:</label>
+                                    <input
+                                        type="number"
+                                        value={projectionOffsetInput}
+                                        onChange={(e) => {
+                                            setProjectionOffsetInput(e.target.value);
+                                        }}
+                                        onBlur={(e) => {
+                                            const val = parseInt(e.target.value, 10);
+                                            if (!isNaN(val)) {
+                                                setProjectionOffset(val);
+                                                setProjectionOffsetInput(val.toString());
+                                            } else {
+                                                setProjectionOffsetInput(projectionOffset.toString());
+                                            }
+                                        }}
+                                        className="w-20 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-slate-200 focus:border-blue-500 focus:outline-none"
+                                        title="Offset em pontos de preço"
+                                    />
+                                    <span className="text-xs text-slate-500">pts</span>
+                                </div>
+                            )}
+
+                            {/* Status Message */}
+                            <p className="text-xs text-slate-500">
+                                {!showDelta && !showProjectionLines && !showProjectionBars && (
+                                    <span className="text-amber-400">⚠️ Nenhum modo selecionado - Delta ativado por padrão</span>
+                                )}
+                                {showDelta && !showProjectionLines && !showProjectionBars && 'Mostrando apenas barras de liquidação'}
+                                {!showDelta && showProjectionLines && !showProjectionBars && `Projeções em linhas pontilhadas (±${projectionOffset}pts)`}
+                                {!showDelta && !showProjectionLines && showProjectionBars && `Projeções em barras pontilhadas (±${projectionOffset}pts)`}
+                                {(showDelta && showProjectionLines) && `Delta + Linhas de Projeção (±${projectionOffset}pts)`}
+                                {(showDelta && showProjectionBars) && `Delta + Barras de Projeção (±${projectionOffset}pts)`}
+                                {(!showDelta && showProjectionLines && showProjectionBars) && `Linhas + Barras de Projeção (±${projectionOffset}pts)`}
+                                {(showDelta && showProjectionLines && showProjectionBars) && `Delta + Linhas + Barras (±${projectionOffset}pts)`}
+                            </p>
+                        </div>
                     </div>
 
                     {/* Advanced Settings */}
@@ -1558,6 +1977,10 @@ export function LiquidationTest() {
                                 liquidationZonesColorByDelta={liquidationZonesColorByDelta}
                                 liquidationZonesLongColor={liquidationZonesLongColor}
                                 liquidationZonesShortColor={liquidationZonesShortColor}
+                                showDelta={showDelta}
+                                showProjectionLines={showProjectionLines}
+                                showProjectionBars={showProjectionBars}
+                                projectionOffset={projectionOffset}
                             />
                             {/* Resize Handle */}
                             <div
