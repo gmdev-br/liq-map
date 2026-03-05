@@ -10,7 +10,8 @@ const isLargeDataKey = (key: string) =>
 interface UseCacheDataOptions<T> {
     cacheKey: string;
     fetchFn: () => Promise<T>;
-    ttlMinutes?: number;
+    /** TTL in minutes. Use `null` or `undefined` for unlimited duration (never expires) */
+    ttlMinutes?: number | null;
     enabled?: boolean;
     onSuccess?: (data: T) => void;
     onError?: (error: Error) => void;
@@ -21,14 +22,17 @@ interface UseCacheDataResult<T> {
     isLoading: boolean;
     error: Error | null;
     refetch: (forceRefresh?: boolean) => Promise<void>;
+    refresh: () => Promise<void>; // Alias for force refresh
     isFromCache: boolean;
     clearCache: () => void | Promise<void>;
+    lastUpdated: Date | null; // Timestamp of last update
+    isStale: boolean; // True if data is older than 30 minutes
 }
 
 export function useCacheData<T>({
     cacheKey,
     fetchFn,
-    ttlMinutes = 60,
+    ttlMinutes,
     enabled = true,
     onSuccess,
     onError
@@ -37,6 +41,8 @@ export function useCacheData<T>({
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
     const [isFromCache, setIsFromCache] = useState(false);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+    const [isStale, setIsStale] = useState(true);
     const requestIdRef = useRef(0);
 
     const fetchData = useCallback(async (forceRefresh = false, backgroundRefresh = false) => {
@@ -67,12 +73,33 @@ export function useCacheData<T>({
                 if (cachedData !== null) {
                     // Check if request is still valid
                     if (currentRequestId !== requestIdRef.current) return;
-                    
+
                     setData(cachedData);
                     setIsFromCache(true);
+
+                    // Update lastUpdated and isStale from cache metadata
+                    const updateCacheInfo = async () => {
+                        if (isLargeDataKey(cacheKey)) {
+                            const metadata = await dbCache.getMetadata(cacheKey);
+                            if (metadata?.lastUpdated) {
+                                const lastUpdateDate = new Date(metadata.lastUpdated);
+                                setLastUpdated(lastUpdateDate);
+                                setIsStale(await dbCache.isStale(cacheKey, 30));
+                            }
+                        } else {
+                            const metadata = cache.getMetadata(cacheKey);
+                            if (metadata?.lastUpdated) {
+                                const lastUpdateDate = new Date(metadata.lastUpdated);
+                                setLastUpdated(lastUpdateDate);
+                                setIsStale(cache.isStale(cacheKey, 30));
+                            }
+                        }
+                    };
+                    updateCacheInfo();
+
                     onSuccess?.(cachedData);
                     setIsLoading(false);
-                    
+
                     // Stale-While-Revalidate: trigger background refresh
                     setTimeout(() => fetchData(false, true), 0);
                     return;
@@ -95,6 +122,8 @@ export function useCacheData<T>({
             }
 
             setData(freshData);
+            setLastUpdated(new Date());
+            setIsStale(false);
             onSuccess?.(freshData);
         } catch (err) {
             const errorObj = err instanceof Error ? err : new Error(String(err));
@@ -109,6 +138,11 @@ export function useCacheData<T>({
 
     const refetch = useCallback((forceRefresh = false) => {
         return fetchData(forceRefresh);
+    }, [fetchData]);
+
+    const refresh = useCallback(() => {
+        // Force refresh - clears cache and fetches fresh data
+        return fetchData(true);
     }, [fetchData]);
 
     const clearCache = useCallback(async () => {
@@ -130,15 +164,19 @@ export function useCacheData<T>({
         isLoading,
         error,
         refetch,
+        refresh,
         isFromCache,
-        clearCache
+        clearCache,
+        lastUpdated,
+        isStale
     };
 }
 
 interface UseCacheDataMultipleOptions<T> {
     cacheKeys: string[];
     fetchFns: Array<() => Promise<T>>;
-    ttlMinutes?: number;
+    /** TTL in minutes. Use `null` or `undefined` for unlimited duration (never expires) */
+    ttlMinutes?: number | null;
     enabled?: boolean;
     onSuccess?: (data: T[]) => void;
     onError?: (error: Error) => void;
@@ -149,14 +187,17 @@ interface UseCacheDataMultipleResult<T> {
     isLoading: boolean;
     errors: Error[];
     refetch: (forceRefresh?: boolean) => Promise<void>;
+    refresh: () => Promise<void>;
     isFromCache: boolean[];
     clearCache: () => void | Promise<void>;
+    lastUpdated: Date | null;
+    isStale: boolean;
 }
 
 export function useCacheDataMultiple<T>({
     cacheKeys,
     fetchFns,
-    ttlMinutes = 60,
+    ttlMinutes,
     enabled = true,
     onSuccess,
     onError
@@ -165,6 +206,8 @@ export function useCacheDataMultiple<T>({
     const [isLoading, setIsLoading] = useState(false);
     const [errors, setErrors] = useState<Error[]>([]);
     const [isFromCache, setIsFromCache] = useState<boolean[]>([]);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+    const [isStale, setIsStale] = useState(true);
 
     const fetchData = useCallback(async (forceRefresh = false) => {
         if (!enabled || cacheKeys.length === 0 || fetchFns.length === 0) return;
@@ -249,6 +292,10 @@ export function useCacheDataMultiple<T>({
         return fetchData(forceRefresh);
     }, [fetchData]);
 
+    const refresh = useCallback(() => {
+        return fetchData(true);
+    }, [fetchData]);
+
     const clearCache = useCallback(async () => {
         for (const key of cacheKeys) {
             if (isLargeDataKey(key)) {
@@ -259,6 +306,8 @@ export function useCacheDataMultiple<T>({
         }
         setData([]);
         setIsFromCache([]);
+        setLastUpdated(null);
+        setIsStale(true);
     }, [cacheKeys]);
 
     useEffect(() => {
@@ -270,7 +319,10 @@ export function useCacheDataMultiple<T>({
         isLoading,
         errors,
         refetch,
+        refresh,
         isFromCache,
-        clearCache
+        clearCache,
+        lastUpdated,
+        isStale
     };
 }

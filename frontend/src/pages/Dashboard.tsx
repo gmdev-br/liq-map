@@ -6,6 +6,9 @@ import { LiquidationCard } from '@/components/LiquidationCard';
 import { PriceChart, ExchangeChart } from '@/components/PriceChart';
 import { Card, CardContent, CardHeader, Badge } from '@/components/ui/Card';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { useCacheData } from '@/hooks/useCacheData';
+import { CacheStatus } from '@/components/CacheStatus';
+import { liquidationsApi } from '@/services/api';
 import type { Liquidation } from '@/types';
 import { clsx } from 'clsx';
 
@@ -60,6 +63,14 @@ export function Dashboard() {
 
   const { data: stats, isLoading: statsLoading } = useLiquidationStats();
 
+  // Use cache data for tracking refresh status
+  const { lastUpdated, isStale, refresh } = useCacheData({
+    cacheKey: 'dashboard_liquidations',
+    fetchFn: () => liquidationsApi.getAll({ page: 1, page_size: 20 }).then((res) => res.data),
+    ttlMinutes: 30,
+    enabled: false,
+  });
+
   const { lastMessage } = useWebSocket();
 
   const pendingUpdatesRef = useRef<any[]>([]);
@@ -112,7 +123,17 @@ export function Dashboard() {
           <h2 className="text-2xl font-bold text-white">Dashboard</h2>
           <p className="text-white/50 mt-1">Real-time cryptocurrency liquidation tracking</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <CacheStatus
+            lastUpdated={lastUpdated}
+            isStale={isStale}
+            isLoading={liquidationsLoading}
+            onRefresh={() => {
+              refresh();
+              refetchLiquidations();
+            }}
+            title="Liquidações"
+          />
           <select
             value={timeRange}
             onChange={(e) => setTimeRange(e.target.value)}

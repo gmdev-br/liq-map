@@ -1,30 +1,132 @@
 interface CacheEntry<T> {
     data: T;
     timestamp: number;
-    ttl: number;
+    ttl: number; // TTL in milliseconds. Use Infinity for unlimited duration
+}
+
+interface CacheMetadata {
+    lastUpdated: number;
+    version?: number;
 }
 
 class CacheManager {
     private prefix = 'coinglass_cache_';
+    private metadataPrefix = 'coinglass_cache_meta_';
     private MAX_SIZE = 5 * 1024 * 1024; // 5MB default localStorage limit
+    private PERMANENT_TTL = 365 * 24 * 60 * 60 * 1000; // 1 year in milliseconds
 
-    set<T>(key: string, data: T, ttlMinutes: number = 60): void {
+    /**
+     * Set data in cache with permanent/no expiration (1 year TTL)
+     * Use this for data that should persist across sessions
+     */
+    setPermanent<T>(key: string, data: T): void {
+        this.set(key, data, this.PERMANENT_TTL);
+    }
+
+    /**
+     * Set data in cache with unlimited duration (never expires)
+     * Use this for data that should never expire until explicitly cleared
+     */
+    setUnlimited<T>(key: string, data: T): void {
+        this.set(key, data, null);
+    }
+
+    /**
+     * Get metadata for a cache key (last updated timestamp, version, etc.)
+     */
+    getMetadata(key: string): CacheMetadata | null {
+        try {
+            const item = localStorage.getItem(this.metadataPrefix + key);
+            if (!item) return null;
+            return JSON.parse(item);
+        } catch (error) {
+            console.error('Error reading cache metadata:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Set metadata for a cache key
+     */
+    setMetadata(key: string, metadata: CacheMetadata): void {
+        try {
+            localStorage.setItem(this.metadataPrefix + key, JSON.stringify(metadata));
+        } catch (error) {
+            console.error('Error saving cache metadata:', error);
+        }
+    }
+
+    /**
+     * Remove metadata for a cache key
+     */
+    removeMetadata(key: string): void {
+        try {
+            localStorage.removeItem(this.metadataPrefix + key);
+        } catch (error) {
+            console.error('Error removing cache metadata:', error);
+        }
+    }
+
+    /**
+     * Check if data is stale (older than maxAgeMinutes) without removing it
+     * Returns true if data doesn't exist or is older than maxAgeMinutes
+     */
+    isStale(key: string, maxAgeMinutes: number): boolean {
+        try {
+            const item = localStorage.getItem(this.prefix + key);
+            if (!item) return true;
+
+            const entry: CacheEntry<any> = JSON.parse(item);
+            const now = Date.now();
+            const age = now - entry.timestamp;
+            const maxAgeMs = maxAgeMinutes * 60 * 1000;
+
+            return age > maxAgeMs;
+        } catch (error) {
+            console.error('Error checking cache staleness:', error);
+            return true;
+        }
+    }
+
+    /**
+     * Get the age of cached data in minutes
+     * Returns -1 if data doesn't exist
+     */
+    getAge(key: string): number {
+        try {
+            const item = localStorage.getItem(this.prefix + key);
+            if (!item) return -1;
+
+            const entry: CacheEntry<any> = JSON.parse(item);
+            const now = Date.now();
+            const ageMs = now - entry.timestamp;
+            return Math.floor(ageMs / (60 * 1000));
+        } catch (error) {
+            console.error('Error getting cache age:', error);
+            return -1;
+        }
+    }
+
+    set<T>(key: string, data: T, ttlMinutes?: number | null): void {
         const entry: CacheEntry<T> = {
             data,
             timestamp: Date.now(),
-            ttl: ttlMinutes * 60 * 1000
+            ttl: ttlMinutes === null || ttlMinutes === undefined ? Infinity : ttlMinutes * 60 * 1000
         };
         const serialized = JSON.stringify(entry);
         const requiredSpace = serialized.length * 2; // Each char takes 2 bytes in UTF-16
 
         try {
             localStorage.setItem(this.prefix + key, serialized);
+            // Update metadata with last updated timestamp
+            this.setMetadata(key, { lastUpdated: Date.now() });
         } catch (error) {
             if (error instanceof Error && (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
                 console.warn('Cache quota exceeded, clearing old entries...');
                 this.makeSpace(requiredSpace);
                 try {
                     localStorage.setItem(this.prefix + key, serialized);
+                    this.setMetadata(key, { lastUpdated: Date.now() });
                 } catch (retryError) {
                     console.error('Failed to save to cache even after clearing space', retryError);
                 }
@@ -144,7 +246,8 @@ class CacheManager {
             const now = Date.now();
             const age = now - entry.timestamp;
 
-            if (age > entry.ttl) {
+            // Check expiration: unlimited duration (Infinity) never expires
+            if (entry.ttl !== Infinity && age > entry.ttl) {
                 this.remove(key);
                 return null;
             }
@@ -159,6 +262,7 @@ class CacheManager {
     remove(key: string): void {
         try {
             localStorage.removeItem(this.prefix + key);
+            this.removeMetadata(key);
         } catch (error) {
             console.error('Error removing from cache:', error);
         }
@@ -168,7 +272,7 @@ class CacheManager {
         try {
             const keys = Object.keys(localStorage);
             keys.forEach(key => {
-                if (key.startsWith(this.prefix)) {
+                if (key.startsWith(this.prefix) || key.startsWith(this.metadataPrefix)) {
                     localStorage.removeItem(key);
                 }
             });
@@ -186,7 +290,8 @@ class CacheManager {
             const now = Date.now();
             const age = now - entry.timestamp;
 
-            if (age > entry.ttl) {
+            // Check expiration: unlimited duration (Infinity) never expires
+            if (entry.ttl !== Infinity && age > entry.ttl) {
                 this.remove(key);
                 return false;
             }
@@ -197,7 +302,7 @@ class CacheManager {
         }
     }
 
-    getCacheInfo(key: string): { exists: boolean; age: number; ttl: number } | null {
+    getCacheInfo(key: string): { exists: boolean; age: number; ttl: number; isUnlimited: boolean } | null {
         try {
             const item = localStorage.getItem(this.prefix + key);
             if (!item) return null;
@@ -205,11 +310,13 @@ class CacheManager {
             const entry: CacheEntry<any> = JSON.parse(item);
             const now = Date.now();
             const age = now - entry.timestamp;
+            const isUnlimited = entry.ttl === Infinity;
 
             return {
-                exists: age <= entry.ttl,
+                exists: isUnlimited || age <= entry.ttl,
                 age,
-                ttl: entry.ttl
+                ttl: entry.ttl,
+                isUnlimited
             };
         } catch (error) {
             return null;

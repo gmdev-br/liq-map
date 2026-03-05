@@ -84,7 +84,7 @@ const fetchBinancePrice = async (symbol: string): Promise<number> => {
       const closePrice = response.data[0]?.[4];
       const price = closePrice ? parseFloat(closePrice) : 0;
 
-      if (price > 0) cache.set(cacheKey, price, 1); // 1 min cache for prices
+      if (price > 0) cache.set(cacheKey, price, 1); // 1 min cache for live prices (real-time)
       return price;
     } catch (error: any) {
       // Silent fail for prices, avoid console clutter
@@ -163,12 +163,31 @@ export const liquidationsApi = {
     const apiKey = getApiKey();
     const query = `symbols=${symbols}&interval=${interval}&from=${fromTime}&to=${toTime}&api_key=${apiKey}`;
     const cacheKey = `liq_${symbols}_${fromTime}_${toTime}`;
+    const targetUrl = `/api/coinalyze?${query}`;
 
-    // Check for cached data first
+    // SOFT REFRESH: Always check for cached data first
+    let cachedData: any = null;
+    let isStale = true;
     try {
-      const cached = await dbCache.get<any>(cacheKey);
-      if (cached) return cached;
+      cachedData = await dbCache.get<any>(cacheKey);
+      // Check if data is stale (> 30 minutes old)
+      isStale = await dbCache.isStale(cacheKey, 30);
+      if (cachedData && !isStale) {
+        // Data is fresh, return immediately without API call
+        console.log(`[API] Returning fresh cached data for ${cacheKey}`);
+        return cachedData;
+      }
     } catch (e) { }
+
+    // If we have cached data but it's stale, return it immediately and refresh in background
+    if (cachedData && isStale) {
+      console.log(`[API] Returning stale cached data for ${cacheKey}, refreshing in background`);
+      // Trigger background refresh without awaiting
+      liquidationsApi._fetchAndCacheLiquidations(cacheKey, targetUrl, symbols).catch((err: any) => {
+        console.warn('[API] Background refresh failed:', err);
+      });
+      return cachedData;
+    }
 
     // Deduplicate active requests
     if (activeRequests.has(cacheKey)) {
@@ -176,7 +195,21 @@ export const liquidationsApi = {
       return activeRequests.get(cacheKey);
     }
 
-    const targetUrl = `/api/coinalyze?${query}`;
+    return liquidationsApi._fetchAndCacheLiquidations(cacheKey, targetUrl, symbols, params);
+  },
+
+  // Internal helper method for fetching and caching liquidation data
+  _fetchAndCacheLiquidations: async (
+    cacheKey: string,
+    targetUrl: string,
+    symbols: string,
+    params?: any
+  ): Promise<any> => {
+    // Deduplicate active requests
+    if (activeRequests.has(cacheKey)) {
+      console.log(`[API] Deduplicating request for ${cacheKey}`);
+      return activeRequests.get(cacheKey);
+    }
 
     const fetchPromise = (async () => {
       try {
@@ -276,21 +309,23 @@ export const liquidationsApi = {
           });
         }
 
-        if (params?.amount_min !== undefined) transformedData = transformedData.filter(i => i.amount >= params.amount_min!);
-        if (params?.amount_max !== undefined) transformedData = transformedData.filter(i => i.amount <= params.amount_max!);
+        // Apply amount filters if provided
+        let filteredData = transformedData;
+        if (params?.amount_min !== undefined) filteredData = filteredData.filter((i: any) => i.amount >= params.amount_min!);
+        if (params?.amount_max !== undefined) filteredData = filteredData.filter((i: any) => i.amount <= params.amount_max!);
 
         const result = {
           data: {
-            data: transformedData,
-            total: transformedData.length,
+            data: filteredData,
+            total: filteredData.length,
             page: 1,
-            page_size: transformedData.length,
+            page_size: filteredData.length,
             has_next: false,
             has_prev: false
           }
         };
 
-        await dbCache.set(cacheKey, result, 5); // 5 min cache for liquidations
+        await dbCache.set(cacheKey, result, 1440); // 24 hours cache for liquidations
         return result;
       } catch (error: any) {
         if (error.response?.status === 429) {
@@ -430,7 +465,7 @@ export const liquidationsApi = {
       // Undecorate: Extract sorted symbols
       const sorted = decorated.map(d => d.symbol);
 
-      cache.set('symbols', sorted, 60); // 1h cache for symbols
+      cache.set('symbols', sorted, 10080); // 7 days cache for symbols (stable data)
       return sorted;
     } catch (error) {
       return [
@@ -453,10 +488,44 @@ export const pricesApi = {
     const binanceSymbol = symbols.replace('_PERP.A', '').replace('PERP.A', '');
     const cacheKey = `prices_${symbols}_${params?.start_date}_${params?.end_date}`;
 
+    // SOFT REFRESH: Always check for cached data first
+    let cachedData: any = null;
+    let isStale = true;
     try {
-      const cached = await dbCache.get<any>(cacheKey);
-      if (cached) return cached;
+      cachedData = await dbCache.get<any>(cacheKey);
+      // Check if data is stale (> 30 minutes old)
+      isStale = await dbCache.isStale(cacheKey, 30);
+      if (cachedData && !isStale) {
+        // Data is fresh, return immediately without API call
+        console.log(`[API] Returning fresh cached price data for ${cacheKey}`);
+        return cachedData;
+      }
     } catch (e) { }
+
+    // If we have cached data but it's stale, return it immediately and refresh in background
+    if (cachedData && isStale) {
+      console.log(`[API] Returning stale cached price data for ${cacheKey}, refreshing in background`);
+      // Trigger background refresh without awaiting
+      pricesApi._fetchAndCachePrices(cacheKey, binanceSymbol, params).catch((err: any) => {
+        console.warn('[API] Background price refresh failed:', err);
+      });
+      return cachedData;
+    }
+
+    return pricesApi._fetchAndCachePrices(cacheKey, binanceSymbol, params);
+  },
+
+  // Internal helper method for fetching and caching price data
+  _fetchAndCachePrices: async (
+    cacheKey: string,
+    binanceSymbol: string,
+    params?: any
+  ): Promise<any> => {
+    // Deduplicate active requests
+    if (activeRequests.has(cacheKey)) {
+      console.log(`[API] Deduplicating price request for ${cacheKey}`);
+      return activeRequests.get(cacheKey);
+    }
 
     let binanceUrl: string;
     const baseUrl = isProduction ? 'https://api.binance.com' : '/api/binance-spot';
@@ -496,11 +565,31 @@ export const pricesApi = {
           has_prev: false
         }
       };
-      await dbCache.set(cacheKey, result, 10); // 10 min cache for price history
+      await dbCache.set(cacheKey, result, 1440); // 24 hours cache for price history
       return result;
     } catch (error) {
       throw error;
+    } finally {
+      activeRequests.delete(cacheKey);
     }
+  },
+
+  /**
+   * Force refresh price data (bypasses cache staleness check)
+   */
+  refresh: async (params?: {
+    symbol?: string;
+    start_date?: string;
+    end_date?: string;
+  }): Promise<any> => {
+    const symbols = params?.symbol || 'BTCUSDT_PERP.A';
+    const binanceSymbol = symbols.replace('_PERP.A', '').replace('PERP.A', '');
+    const cacheKey = `prices_${symbols}_${params?.start_date}_${params?.end_date}`;
+
+    // Clear existing request to force new fetch
+    activeRequests.delete(cacheKey);
+
+    return pricesApi._fetchAndCachePrices(cacheKey, binanceSymbol, params);
   },
 };
 
